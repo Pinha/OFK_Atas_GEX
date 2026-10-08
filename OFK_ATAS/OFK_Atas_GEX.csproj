@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <TargetFramework>net10.0-windows</TargetFramework>
-    <UseWPF>true</UseWPF>
+    <UseWPF>false</UseWPF>
     <Nullable>enable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
     <AssemblyName>OFK_Atas_GEX</AssemblyName>
@@ -15,8 +15,13 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <ATASPath>C:\Program Files (x86)\ATAS Platform</ATASPath>
+    <ATASPath>C:\Program Files\ATAS X</ATASPath>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- ATAS X rejects WPF: the replay window is replaced by panel buttons -->
+    <Compile Remove="OFK_ReplayWindow.cs" />
+  </ItemGroup>
 
   <ItemGroup>
     <Reference Include="ATAS.Indicators">
@@ -25,6 +30,10 @@
     </Reference>
     <Reference Include="ATAS.DataFeedsCore">
       <HintPath>$(ATASPath)\ATAS.DataFeedsCore.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="System.Drawing.Common">
+      <HintPath>$(ATASPath)\System.Drawing.Common.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="OFT.Rendering">

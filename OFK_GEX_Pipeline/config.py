@@ -15,7 +15,9 @@ Resolution order for each path:
 from __future__ import annotations
 import json
 import os
-from datetime import date
+import shutil
+from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any, Dict
 
@@ -43,6 +45,29 @@ def compute_data_quality(full_dict: Dict[str, Any]) -> str:
     if has_cme or has_cboe:
         return "partial"
     return "error"
+
+
+# ── Exchange clock ───────────────────────────────────────────────────────────
+# Market dates (trade date, DTE, holidays, "today") follow New York — the
+# exchange clock — whatever the machine's timezone: in Tokyo or São Paulo the
+# local calendar day and the UTC day both differ from the US session day for
+# part of the day. Needs the IANA database (`tzdata` package on Windows).
+MARKET_TZ = ZoneInfo("America/New_York")
+
+
+def market_now(ref: datetime | None = None) -> datetime:
+    """Aware datetime in New York time (ref: aware datetime, default now)."""
+    return (ref or datetime.now(timezone.utc)).astimezone(MARKET_TZ)
+
+
+def market_today(ref: datetime | None = None) -> date:
+    """The US session calendar date (New York), independent of local tz."""
+    return market_now(ref).date()
+
+
+def et_clock(ref: datetime | None = None) -> str:
+    """'HH:MM ET' wall-clock string of New York time."""
+    return market_now(ref).strftime("%H:%M ET")
 
 
 # ── Roots ────────────────────────────────────────────────────────────────────
@@ -83,12 +108,54 @@ ES_BRIEFING_RAW:  Path = DATA_DIR / "_briefing_ES_raw.txt"
 NQ_PROMPT_FILE:   Path = DATA_DIR / "_prompt_NQ.txt"
 ES_PROMPT_FILE:   Path = DATA_DIR / "_prompt_ES.txt"
 
+# ── CME browser window ───────────────────────────────────────────────────────
+# CME's WAF (Akamai) blocks headless Chromium, so the scrape runs a real
+# (headed) browser placed far off every monitor: Windows' virtual desktop
+# stays within ±32767, no multi-monitor layout reaches -32000.
+# Set OFK_BROWSER_VISIBLE=1 to bring the window on screen for debugging.
+_BROWSER_VISIBLE = os.environ.get("OFK_BROWSER_VISIBLE") == "1"
+# (No --disable-features here: Chrome honors only one such flag and
+# Playwright already passes its own list.)
+BROWSER_OFFSCREEN_ARGS = [] if _BROWSER_VISIBLE else ["--window-position=-32000,-32000"]
+
+
+def foreground_window() -> int:
+    """Handle of the window that has the keyboard focus (0 off Windows)."""
+    if os.name != "nt":
+        return 0
+    import ctypes
+    return ctypes.windll.user32.GetForegroundWindow()
+
+
+def give_back_focus(previous: int) -> None:
+    """A newly launched (off-screen) Chromium window takes the keyboard focus:
+    keystrokes — trading hotkeys included — would go to an invisible window.
+    Hand the focus back to `previous`, but only if the off-screen browser
+    still holds it (never yank focus from a window the user picked meanwhile).
+    """
+    if os.name != "nt" or _BROWSER_VISIBLE or not previous:
+        return
+    import ctypes
+    from ctypes import wintypes
+    u, k = ctypes.windll.user32, ctypes.windll.kernel32
+    cur = u.GetForegroundWindow()
+    rect = wintypes.RECT()
+    if not cur or cur == previous or not u.GetWindowRect(cur, ctypes.byref(rect)) or rect.left > -30000:
+        return
+    # SetForegroundWindow is refused to background processes unless their
+    # input is attached to the current foreground thread.
+    t_cur, t_me = u.GetWindowThreadProcessId(cur, None), k.GetCurrentThreadId()
+    u.AttachThreadInput(t_me, t_cur, True)
+    try:
+        u.SetForegroundWindow(previous)
+    finally:
+        u.AttachThreadInput(t_me, t_cur, False)
+
 # ── External tools ───────────────────────────────────────────────────────────
 # Claude Code CLI (npm-installed). Override via env CLAUDE_CMD.
-CLAUDE_CMD: str = os.environ.get(
-    "CLAUDE_CMD",
-    "claude.cmd"
-)
+# Default: whatever `claude` resolves to on PATH (claude.exe from the native
+# installer, claude.cmd from npm, or the Unix binary).
+CLAUDE_CMD: str = os.environ.get("CLAUDE_CMD") or shutil.which("claude") or "claude"
 
 
 def ensure_dirs() -> None:
@@ -145,7 +212,7 @@ def save_snapshot(symbol: str, full_dict: Dict[str, Any]) -> Path:
     Returns the path written.
     """
     trade_date = (full_dict.get("trade_date") or "").strip() or \
-                 date.today().strftime("%Y%m%d")
+                 market_today().strftime("%Y%m%d")
     # CME format is already YYYYMMDD; if user injects ISO (YYYY-MM-DD), normalize.
     if "-" in trade_date:
         trade_date = trade_date.replace("-", "")

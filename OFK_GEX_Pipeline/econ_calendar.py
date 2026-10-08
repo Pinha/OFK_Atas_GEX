@@ -28,9 +28,10 @@ from typing import Dict, List, Optional
 
 log = logging.getLogger(__name__)
 
+# ff_calendar_nextweek.csv is not published by the feed (HTTP 404 since 10/2026):
+# only the current week is available.
 FF_CSV_URLS = [
     "https://nfs.faireconomy.media/ff_calendar_thisweek.csv",
-    "https://nfs.faireconomy.media/ff_calendar_nextweek.csv",
 ]
 
 # Module-level cache (avoids refetch in the same intraday loop)

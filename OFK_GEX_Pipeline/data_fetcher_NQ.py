@@ -483,8 +483,14 @@ def calc_walls_intraday(contracts: list, spot: float, max_dte: int = 7) -> dict:
     if not by_strike:
         return {}
     strikes = list(by_strike.values())
-    call_wall_s = max(strikes, key=lambda x: x["call_gex"])
-    put_wall_s  = min(strikes, key=lambda x: x["put_gex"])
+    # Call Wall = resistance at/above spot, Put Wall = support at/below spot
+    # (GUIDE_GEX_LEVELS.md). Unrestricted, short-dated gamma peaks at the ATM
+    # strike for both sides → CW == PW, which also disables the Context Score
+    # walls/GF terms (they need CW > PW). Falls back to all strikes per side.
+    above = [s for s in strikes if s["strike"] >= spot] or strikes
+    below = [s for s in strikes if s["strike"] <= spot] or strikes
+    call_wall_s = max(above, key=lambda x: x["call_gex"])
+    put_wall_s  = min(below, key=lambda x: x["put_gex"])
     return {
         "call_wall_intraday"     : call_wall_s["strike"],
         "call_wall_intraday_gex" : round(call_wall_s["call_gex"], 0),

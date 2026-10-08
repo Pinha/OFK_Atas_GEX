@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 
 from config import (
-    CLAUDE_CMD, PIPELINE_ROOT,
+    CLAUDE_CMD, PIPELINE_ROOT, et_clock, market_today,
     NQ_FULL_JSON as FULL_JSON,
     NQ_BRIEFING_JSON, NQ_BRIEFING_RAW, NQ_PROMPT_FILE,
 )
@@ -38,10 +38,10 @@ def run_briefing() -> dict:
     print("Claude Agent — generating NQ briefing...")
 
     result = subprocess.run(
-        f'type "{prompt_file}" | "{CLAUDE_CMD}" -p --allowedTools Read',
+        [CLAUDE_CMD, "-p", "--allowedTools", "Read"],
+        input=prompt_file.read_bytes(),
         capture_output=True,
         cwd=PROJECT_DIR,
-        shell=True
     )
 
     prompt_file.unlink(missing_ok=True)
@@ -68,6 +68,10 @@ def run_briefing() -> dict:
     raw = raw.strip()
 
     briefing = json.loads(raw)
+    # The model has no reliable clock: stamp the real New York session
+    # date (also names the PDF) and time.
+    briefing["date"] = market_today().isoformat()
+    briefing["generation_time"] = et_clock()
 
     out = NQ_BRIEFING_JSON
     out.write_text(json.dumps(briefing, indent=2, ensure_ascii=False), encoding="utf-8")

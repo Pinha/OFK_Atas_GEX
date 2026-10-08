@@ -185,6 +185,41 @@ namespace OFK_GEX
     }
 
     // ── OfkUtils : shared helpers ────────────────────────────────────────────
+    // ── Environment: install folder, Python, exchange clock ─────────────────
+    public static class OfkEnv
+    {
+        /// <summary>Repository folder: env var OFK_GEX_HOME, else C:\OFK_Atas_GEX
+        /// on Windows / ~/OFK_Atas_GEX elsewhere. Only seeds the defaults of new
+        /// indicator instances — every path stays editable in the settings.</summary>
+        public static readonly string Home =
+            Environment.GetEnvironmentVariable("OFK_GEX_HOME") is { Length: > 0 } h ? h
+            : OperatingSystem.IsWindows() ? @"C:\OFK_Atas_GEX"
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "OFK_Atas_GEX");
+
+        public static string Pipeline => Path.Combine(Home, "OFK_GEX_Pipeline");
+        public static string Data     => Path.Combine(Pipeline, "data");
+
+        public static readonly string PythonExe = OperatingSystem.IsWindows() ? "python.exe" : "python3";
+
+        /// <summary>Exchange clock (New York, DST-aware) for session rules, whatever
+        /// the machine's timezone. The IANA id works on .NET 6+ (Windows via ICU);
+        /// the Windows id is the fallback.</summary>
+        public static readonly TimeZoneInfo Eastern = FindEastern();
+
+        private static TimeZoneInfo FindEastern()
+        {
+            foreach (var id in new[] { "America/New_York", "Eastern Standard Time" })
+                try { return TimeZoneInfo.FindSystemTimeZoneById(id); } catch { }
+            return TimeZoneInfo.Utc; // last resort: session rules would be off by 4-5 h
+        }
+
+        public static DateTime NowEt => TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, Eastern);
+
+        public static DateTime ToEt(DateTime t) =>
+            t.Kind == DateTimeKind.Utc ? TimeZoneInfo.ConvertTimeFromUtc(t, Eastern)
+                                       : TimeZoneInfo.ConvertTime(t, TimeZoneInfo.Local, Eastern);
+    }
+
     public static class OfkUtils
     {
         /// <summary>
@@ -194,6 +229,24 @@ namespace OFK_GEX
         /// Process.Start with UseShellExecute = false, which does not resolve
         /// PATH by default). Fallback: returns <paramref name="exePath"/> as-is.
         /// </summary>
+        /// <summary>True when the file's last write differs from <paramref name="seen"/>.
+        /// Stats the disk at most every 5 s: OnCalculate runs on every tick of the
+        /// live bar. Lets the chart follow the intraday loop (one write / 5 min)
+        /// instead of waiting for the "Refresh (minutes)" timer.</summary>
+        public static bool FileChanged(string path, DateTime seen, ref DateTime lastCheck)
+        {
+            var now = DateTime.UtcNow;
+            if ((now - lastCheck).TotalSeconds < 5) return false;
+            lastCheck = now;
+            try { return File.Exists(path) && File.GetLastWriteTimeUtc(path) != seen; }
+            catch { return false; }
+        }
+
+        public static DateTime LastWriteUtc(string path)
+        {
+            try { return File.GetLastWriteTimeUtc(path); } catch { return DateTime.MinValue; }
+        }
+
         public static string ResolveExe(string exePath)
         {
             if (string.IsNullOrWhiteSpace(exePath)) return exePath;
@@ -202,7 +255,7 @@ namespace OFK_GEX
                 if (System.IO.Path.IsPathRooted(exePath) && File.Exists(exePath))
                     return exePath;
                 string pathEnv = Environment.GetEnvironmentVariable("PATH") ?? "";
-                foreach (var dir in pathEnv.Split(';'))
+                foreach (var dir in pathEnv.Split(System.IO.Path.PathSeparator))
                 {
                     string trimmed = dir.Trim().Trim('"');
                     if (string.IsNullOrEmpty(trimmed)) continue;
@@ -360,29 +413,33 @@ namespace OFK_GEX
 
         public readonly struct SnapshotInfo
         {
-            public readonly DateTime Timestamp; // local time (HHMM in filename)
+            public readonly DateTime Timestamp; // local time (filename HHMM is UTC)
             public readonly string   Path;
             public SnapshotInfo(DateTime ts, string path) { Timestamp = ts; Path = path; }
         }
 
         /// <summary>
-        /// Lists intraday snapshots for a symbol on a given local date.
+        /// Lists intraday snapshots of one US session (New York calendar date),
+        /// with timestamps in the machine's local time for display.
         /// Expected pattern: {SYMBOL}_full_levels_{YYYYMMDD}_{HHMM}.json
         /// Returns the list sorted by ascending timestamp (empty if directory missing).
         /// symbol = "NQ" or "ES" (case-insensitive, normalized to uppercase).
         /// </summary>
         public static System.Collections.Generic.List<SnapshotInfo> ListSnapshots(
-            string intradayDir, string symbol, DateTime localDate)
+            string intradayDir, string symbol, DateTime sessionDateEt)
         {
             var result = new System.Collections.Generic.List<SnapshotInfo>();
             if (string.IsNullOrEmpty(intradayDir) || !Directory.Exists(intradayDir))
                 return result;
             string sym = (symbol ?? "NQ").ToUpperInvariant();
-            string dateStr = localDate.ToString("yyyyMMdd");
-            string pattern = $"{sym}_full_levels_{dateStr}_*.json";
+            // The pipeline names snapshots in UTC (config.save_intraday_snapshot):
+            // scan the UTC dates around the session, keep its New York date.
+            var day = sessionDateEt.Date;
+            var utcDates = new[] { day.AddDays(-1), day, day.AddDays(1) };
             try
             {
-                foreach (var path in Directory.GetFiles(intradayDir, pattern))
+                foreach (var d in utcDates)
+                foreach (var path in Directory.GetFiles(intradayDir, $"{sym}_full_levels_{d:yyyyMMdd}_*.json"))
                 {
                     string stem = Path.GetFileNameWithoutExtension(path);
                     var parts = stem.Split('_');
@@ -391,9 +448,9 @@ namespace OFK_GEX
                     if (hhmm.Length != 4) continue;
                     if (!int.TryParse(hhmm.Substring(0, 2), out int hh)) continue;
                     if (!int.TryParse(hhmm.Substring(2, 2), out int mm)) continue;
-                    var ts = new DateTime(localDate.Year, localDate.Month, localDate.Day, hh, mm, 0,
-                                          DateTimeKind.Local);
-                    result.Add(new SnapshotInfo(ts, path));
+                    var utc = new DateTime(d.Year, d.Month, d.Day, hh, mm, 0, DateTimeKind.Utc);
+                    if (OfkEnv.ToEt(utc).Date != day) continue;
+                    result.Add(new SnapshotInfo(utc.ToLocalTime(), path));
                 }
             }
             catch (Exception) { }

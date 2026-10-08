@@ -93,6 +93,8 @@ MIN_OI         = 5     # minimum OI per strike to include
 
 # ── JSON output path (centralized in config.py, override via ES_GEX_JSON env var) ──
 from config import ES_GEX_JSON as GEX_OUTPUT_PATH
+from config import BROWSER_OFFSCREEN_ARGS, foreground_window, give_back_focus, market_today
+from gamma_profile import zero_gamma, zero_vanna
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -161,10 +163,12 @@ class CMEBrowserSession:
         self._pw = self._browser = self._page = None
 
     def __enter__(self):
+        prev_focus    = foreground_window()
         self._pw      = sync_playwright().start()
         self._browser = self._pw.chromium.launch(
             headless=self._headless,
-            args=['--disable-blink-features=AutomationControlled', '--no-sandbox', '--disable-http2']
+            args=['--disable-blink-features=AutomationControlled', '--no-sandbox', '--disable-http2',
+                  *BROWSER_OFFSCREEN_ARGS]
         )
         ctx = self._browser.new_context(
             user_agent=(
@@ -175,6 +179,7 @@ class CMEBrowserSession:
             viewport={"width": 1280, "height": 720},
         )
         self._page = ctx.new_page()
+        give_back_focus(prev_focus)
         log.info("Initializing CME ES browser...")
         for attempt in range(3):
             try:
@@ -232,7 +237,7 @@ def get_latest_trade_date(session: CMEBrowserSession) -> str:
             log.info(f"  Trade date: {td}")
             return td
     # Fallback: last business day
-    today = date.today()
+    today = market_today()
     for delta in range(1, 5):
         d = today - timedelta(days=delta)
         if d.weekday() < 5:
@@ -378,7 +383,7 @@ def get_oi_by_strike(session: CMEBrowserSession, pid: int,
 
     # Retry with today's date for imminent expirations (0DTE/1DTE)
     if n == 0 and dte is not None and dte <= 2:
-        today_fmt = date.today().strftime('%m/%d/%Y')
+        today_fmt = market_today().strftime('%m/%d/%Y')
         if today_fmt != trade_date_fmt:
             log.info(f"    [{pid}/{exp_code}] dte={dte} → retry with today's date {today_fmt}")
             url2 = (f"{CME_BASE}/CmeWS/mvc/Settlements/Options/Settlements"
@@ -421,7 +426,7 @@ def _calc_dte(exp_code: str) -> int:
         c  = calendar.monthcalendar(y, m)
         fs = [w[4] for w in c if w[4] != 0]
         exp_date = date(y, m, fs[2] if len(fs) >= 3 else fs[-1])
-        return max(0, (exp_date - date.today()).days)
+        return max(0, (exp_date - market_today()).days)
     except Exception:
         return 30
 
@@ -664,7 +669,8 @@ def _compute_skew_25d(exposures: Dict[float, Dict], target_delta: float = 0.25,
 
 def aggregate_levels(all_exposures: Dict[float, Dict], spot: float,
                      iv_by_dte: Optional[Dict[int, float]] = None,
-                     skew_by_dte: Optional[Dict[int, float]] = None) -> Dict:
+                     skew_by_dte: Optional[Dict[int, float]] = None,
+                     legs: Optional[List[Tuple]] = None) -> Dict:
     """Aggregates all expirations and computes the derived levels.
 
     iv_by_dte   : optional dict DTE -> ATM IV (front-month → IVx).
@@ -689,15 +695,10 @@ def aggregate_levels(all_exposures: Dict[float, Dict], spot: float,
     total_cex = sum(combined[k]['cex'] for k in strikes)
     total_dex = sum(combined[k]['dex'] for k in strikes)
 
-    # Gamma Flip — cumulative GEX changes sign
-    gamma_flip = spot
-    cumulative = 0.0
-    for k in strikes:
-        prev       = cumulative
-        cumulative += combined[k]['gex']
-        if prev != 0 and (prev < 0) != (cumulative < 0):
-            gamma_flip = k
-            break
+    # Gamma Flip (zero gamma) — price where total dealer gamma changes sign,
+    # from the gamma profile (gamma_profile.py). 0 = no flip within ±15% of
+    # spot — never the spot itself: a fake level would be drawn and alerted on.
+    gamma_flip = zero_gamma(legs or [], spot) or 0.0
 
     # Vol Trigger — strike closest to spot with GEX > 0
     vol_trigger = spot
@@ -719,15 +720,9 @@ def aggregate_levels(all_exposures: Dict[float, Dict], spot: float,
         very_neg    = [k for k in below_spot if combined[k]['gex'] < -gex_mean * 0.5]
         risk_pivot  = max(very_neg) if very_neg else min(below_spot, key=lambda k: combined[k]['gex'])
 
-    # Vanna Flip — VEX changes sign
-    vanna_flip = spot
-    cum_vex    = 0.0
-    for k in strikes:
-        prev_v  = cum_vex
-        cum_vex += combined[k]['vex']
-        if prev_v != 0 and (prev_v < 0) != (cum_vex < 0):
-            vanna_flip = k
-            break
+    # Vanna Flip — price where total vanna changes sign, from the vanna
+    # profile (gamma_profile.py). 0 = no flip within ±15% (never the spot).
+    vanna_flip = zero_vanna(legs or [], spot) or 0.0
 
     # Charm Magnet — max |CEX|
     charm_magnet = max(strikes, key=lambda k: abs(combined[k]['cex']))
@@ -803,6 +798,7 @@ def fetch_gex_levels(manual_spot: float = 0, headless: bool = False) -> Dict:
         iv_by_dte: Dict[int, float] = {}
         # 25Δ skew per DTE (used for headline skew)
         skew_by_dte: Dict[int, float] = {}
+        legs: List[Tuple] = []
 
         for exp in expirations:
             pid = exp['productId']
@@ -843,6 +839,10 @@ def fetch_gex_levels(manual_spot: float = 0, headless: bool = False) -> Dict:
 
             settle_data = oi_data  # settlements included in the same response (or fallback)
             exposures   = compute_greek_exposures(oi_data, settle_data, dte, spot)
+            # Per-option inputs for the gamma profile (Gamma Flip, see gamma_profile.py)
+            T_leg = max(dte / 365.0, 0.5 / 365)
+            legs.extend((K, T_leg, ex['c_oi'], ex['c_iv'], ex['p_oi'], ex['p_iv'])
+                        for K, ex in exposures.items())
 
             # ATM IV + 25Δ skew for this expiration
             if dte > 0 and exposures:
@@ -866,7 +866,8 @@ def fetch_gex_levels(manual_spot: float = 0, headless: bool = False) -> Dict:
             return {}
 
         levels = aggregate_levels(all_exposures, spot,
-                                  iv_by_dte=iv_by_dte, skew_by_dte=skew_by_dte)
+                                  iv_by_dte=iv_by_dte, skew_by_dte=skew_by_dte,
+                                  legs=legs)
         levels['spot']       = spot
         levels['trade_date'] = trade_date
 

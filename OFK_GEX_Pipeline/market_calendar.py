@@ -19,8 +19,10 @@ Public API:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, time as dtime, timezone, timedelta
+from datetime import date, datetime, time as dtime, timezone, timedelta
 from typing import Optional
+
+from config import MARKET_TZ, market_today
 
 log = logging.getLogger(__name__)
 
@@ -40,18 +42,24 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _et_day(ref: datetime) -> date:
+    """Exchange (New York) calendar day of an aware datetime. The UTC day is
+    already "tomorrow" after 20:00 ET, so ref.date() picked the wrong session."""
+    return market_today(ref)
+
+
 def is_market_open_today(ref: Optional[datetime] = None) -> bool:
     """True if NYSE is open today (no weekend, no holiday)."""
     ref = ref or _now_utc()
     if _NYSE is None:
-        return ref.weekday() < 5  # fallback: weekend only
+        return _et_day(ref).weekday() < 5  # fallback: weekend only
 
     try:
-        sched = _NYSE.schedule(start_date=ref.date(), end_date=ref.date())
+        sched = _NYSE.schedule(start_date=_et_day(ref), end_date=_et_day(ref))
         return not sched.empty
     except Exception as e:
         log.debug(f"is_market_open_today fallback: {e}")
-        return ref.weekday() < 5
+        return _et_day(ref).weekday() < 5
 
 
 def is_early_close_today(ref: Optional[datetime] = None) -> bool:
@@ -61,7 +69,7 @@ def is_early_close_today(ref: Optional[datetime] = None) -> bool:
         return False
 
     try:
-        sched = _NYSE.schedule(start_date=ref.date(), end_date=ref.date())
+        sched = _NYSE.schedule(start_date=_et_day(ref), end_date=_et_day(ref))
         if sched.empty:
             return False
         close_utc = sched.iloc[0]["market_close"].to_pydatetime()
@@ -77,13 +85,13 @@ def session_close_today_utc(ref: Optional[datetime] = None) -> Optional[datetime
     """UTC datetime of today's NYSE close. None if market closed."""
     ref = ref or _now_utc()
     if _NYSE is None:
-        # Fallback: 20:00 UTC (16:00 EST) — incorrect under DST but a simple approximation
-        if ref.weekday() >= 5:
+        # Fallback: 16:00 New York time (DST-aware), no holidays
+        if _et_day(ref).weekday() >= 5:
             return None
-        return ref.replace(hour=20, minute=0, second=0, microsecond=0)
+        return datetime.combine(_et_day(ref), dtime(16, 0), MARKET_TZ).astimezone(timezone.utc)
 
     try:
-        sched = _NYSE.schedule(start_date=ref.date(), end_date=ref.date())
+        sched = _NYSE.schedule(start_date=_et_day(ref), end_date=_et_day(ref))
         if sched.empty:
             return None
         return sched.iloc[0]["market_close"].to_pydatetime()
@@ -95,12 +103,12 @@ def session_open_today_utc(ref: Optional[datetime] = None) -> Optional[datetime]
     """UTC datetime of today's NYSE open. None if market closed."""
     ref = ref or _now_utc()
     if _NYSE is None:
-        if ref.weekday() >= 5:
+        if _et_day(ref).weekday() >= 5:
             return None
-        return ref.replace(hour=13, minute=30, second=0, microsecond=0)
+        return datetime.combine(_et_day(ref), dtime(9, 30), MARKET_TZ).astimezone(timezone.utc)
 
     try:
-        sched = _NYSE.schedule(start_date=ref.date(), end_date=ref.date())
+        sched = _NYSE.schedule(start_date=_et_day(ref), end_date=_et_day(ref))
         if sched.empty:
             return None
         return sched.iloc[0]["market_open"].to_pydatetime()

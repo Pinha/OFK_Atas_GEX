@@ -29,3 +29,5 @@ OFK_GEX_Pipeline/logs/
 .DS_Store
 Thumbs.db
 *.sln
+# Local safety copies made before edits (not part of the project)
+backup/

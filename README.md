@@ -10,23 +10,39 @@ ATAS indicators and Python pipeline for trading the E-mini Nasdaq-100 (NQ) and E
 
 ## Quick install
 
-**Required path**: the repository must end up at `C:\OFK_Atas_GEX\` (root of the C: drive).
-The ATAS indicator default settings are pre-configured for this location. Installing elsewhere requires manual editing of indicator parameters in ATAS.
+**Install path**: any folder. The indicators' default paths come from the environment
+variable `OFK_GEX_HOME` (the repository folder); without it they default to `C:\OFK_Atas_GEX\`
+(`~/OFK_Atas_GEX` outside Windows). Set it once, then restart ATAS:
+
+```powershell
+[Environment]::SetEnvironmentVariable('OFK_GEX_HOME', 'D:\Trading\OFK_Atas_GEX', 'User')
+```
+
+The Python pipeline and `OFK_Loader.cmd` resolve their paths relative to their own folder,
+and the Claude CLI is found on `PATH` (`CLAUDE_CMD` only overrides it).
+
+**Timezone**: any. Session dates, DTE, holidays, the last-hour / 0DTE windows and the
+intraday replay follow the exchange clock (America/New_York, DST-aware), not the
+machine's local time. Snapshot files are named in UTC.
+
+**ATAS X**: it rejects WPF indicators, so `dist/OFK_Atas_GEX.dll` (WPF panel) loads only in
+ATAS Classic. For ATAS X build from source (`dotnet build -c Release` in `OFK_ATAS`, .NET 10
+SDK) and copy the DLL to `%APPDATA%\ATAS X\Indicators\` — it hot-reloads.
 
 ### Steps
 
 1. Download the source ZIP from the [latest release](https://github.com/Kza56/OFK_Atas_GEX/releases/latest)
 2. Extract it — you'll get a folder named `OFK_Atas_GEX-main`
-3. Rename it to `OFK_Atas_GEX` and move it to `C:\` so you have `C:\OFK_Atas_GEX\`
+3. Rename it to `OFK_Atas_GEX` and move it anywhere (e.g. `C:\OFK_Atas_GEX\`); if not `C:\OFK_Atas_GEX\`, set `OFK_GEX_HOME` (see above)
 4. **Install Python 3.10 or higher** (tested on 3.14) if you don't have it already: download from [python.org](https://www.python.org/downloads/windows/) and **make sure to check "Add Python to PATH"** during installation. Verify it works by opening PowerShell and running `python --version` — you should see `Python 3.10` or higher (try `python3 --version` if `python` is not recognized).
 5. Open PowerShell and run:
 
 ```powershell
-# Copy the precompiled DLL to ATAS
-Copy-Item "C:\OFK_Atas_GEX\dist\OFK_Atas_GEX.dll" "$env:APPDATA\ATAS\Indicators\" -Force
+# Copy the precompiled DLL to ATAS Classic (ATAS X: build from source, see above)
+Copy-Item ".\dist\OFK_Atas_GEX.dll" "$env:APPDATA\ATAS\Indicators\" -Force
 
-# Install Python dependencies
-cd C:\OFK_Atas_GEX\OFK_GEX_Pipeline
+# Install Python dependencies (from the repository folder)
+cd .\OFK_GEX_Pipeline
 pip install -r requirements.txt
 playwright install chromium
 ```

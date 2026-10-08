@@ -42,7 +42,7 @@ namespace OFK_GEX
         #region Source
 
         [Display(Name = "JSON Path", GroupName = "01.Source", Order = 1)]
-        public string JsonPath { get; set; } = @"C:\OFK_Atas_GEX\OFK_GEX_Pipeline\data\full_levels_ES.json";
+        public string JsonPath { get; set; } = System.IO.Path.Combine(OfkEnv.Data, "full_levels_ES.json");
 
         [Display(Name = "Refresh (minutes)", GroupName = "01.Source", Order = 2)]
         [Range(1, 60)]
@@ -90,6 +90,7 @@ namespace OFK_GEX
         private volatile MetaSnapshot _meta   = MetaSnapshot.Empty;
         private bool     _levelsLoaded = false;
         private DateTime _lastLoadTime = DateTime.MinValue;
+        private DateTime _jsonSeen, _jsonChecked; // JSON last write already loaded / last disk check
         private string   _loadedDate   = "";
 
         // Last computed score (for OnRender)
@@ -99,8 +100,8 @@ namespace OFK_GEX
 
         #endregion
 
-        private static System.Windows.Media.Color ToMediaColor(DrawingColor c)
-            => System.Windows.Media.Color.FromArgb(c.A, c.R, c.G, c.B);
+        // ATAS X series colors are System.Drawing.Color (no WPF Media.Color)
+        private static DrawingColor ToMediaColor(DrawingColor c) => c;
 
         public OFK_ES_ContextScore() : base(true)
         {
@@ -148,12 +149,19 @@ namespace OFK_GEX
             {
                 if (!_levelsLoaded) LoadLevels();
             }
-            if (!_levelsLoaded) return;
+            if (!_levelsLoaded)
+            {
+                // Not loaded yet (file missing / invalid): retry when it changes on disk.
+                if (bar >= CurrentBar - 1 && OfkUtils.FileChanged(JsonPath, _jsonSeen, ref _jsonChecked))
+                    LoadLevels();
+                if (!_levelsLoaded) return;
+            }
 
             bool isLastBar = bar >= CurrentBar - 1;
-            bool newDay    = _loadedDate != DateTime.Today.ToString("yyyy-MM-dd");
+            bool newDay    = _loadedDate != OfkEnv.NowEt.ToString("yyyy-MM-dd");
             bool elapsed   = RefreshMinutes > 0 && (DateTime.Now - _lastLoadTime).TotalMinutes >= RefreshMinutes;
-            if (isLastBar && (newDay || elapsed)) LoadLevels();
+            bool changed   = isLastBar && OfkUtils.FileChanged(JsonPath, _jsonSeen, ref _jsonChecked);
+            if (isLastBar && (newDay || elapsed || changed)) LoadLevels();
 
             // Score is only computed on the live bar (no JSON history)
             if (!isLastBar) return;
@@ -286,9 +294,10 @@ namespace OFK_GEX
             // 6. Term IV backwardation (-5)
             if (lv.TermIntradaySlope > 0.01) { score -= 5; reasons.Add("term-back"); }
 
-            // 7. 0DTE Pin afternoon (±5) — RTH 19:00-21:00 UTC ≈ 14h-16h ET
-            int hUtc = DateTime.UtcNow.Hour;
-            if ((hUtc >= 18 && hUtc <= 21) && lv.PinStrike0DTE > 0 && hasRange)
+            // 7. 0DTE Pin afternoon (±5) — 14:00-16:00 New York time (DST-aware;
+            //    fixed UTC hours drifted 1 h with US DST and ran past the close)
+            int hEt = OfkEnv.NowEt.Hour;
+            if ((hEt >= 14 && hEt < 16) && lv.PinStrike0DTE > 0 && hasRange)
             {
                 decimal pin = (decimal)lv.PinStrike0DTE;
                 decimal pinZone = range * 0.10m;
@@ -346,11 +355,14 @@ namespace OFK_GEX
         private void LoadLevels()
         {
             var (gex, meta, ok) = GexLoader.Load(JsonPath, "es");
-            if (!ok) { _levelsLoaded = false; return; }
+            // Failed read (e.g. caught mid-write by the pipeline): keep the last
+            // good levels; _jsonSeen is unchanged, so the next check retries.
+            if (!ok) return;
             _levels       = gex;
             _meta         = meta;
-            _loadedDate   = DateTime.Today.ToString("yyyy-MM-dd");
+            _loadedDate   = OfkEnv.NowEt.ToString("yyyy-MM-dd");
             _lastLoadTime = DateTime.Now;
+            _jsonSeen     = OfkUtils.LastWriteUtc(JsonPath);
             _levelsLoaded = true;
         }
 

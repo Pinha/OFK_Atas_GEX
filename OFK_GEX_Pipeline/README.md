@@ -21,7 +21,6 @@ OFK_GEX_Pipeline/
 ├── data/                       # runtime outputs (gitignored)
 │   └── samples/                # output examples (committed)
 ├── requirements.txt
-├── .env.example
 └── .gitignore
 ```
 
@@ -47,12 +46,8 @@ playwright install chromium
 ```
 
 For the AI briefing, install the Claude Code CLI (`npm i -g @anthropic-ai/claude-code`).
-If the binary is somewhere other than the default Windows path, configure it:
-
-```bash
-cp .env.example .env
-# edit .env, uncomment the CLAUDE_CMD line with your path
-```
+It is found on `PATH` (`claude`, `claude.exe` or npm's `claude.cmd`); set the
+environment variable `CLAUDE_CMD` only to force another binary.
 
 ---
 
@@ -78,9 +73,12 @@ python generate_pdf_NQ.py
 
 All paths are defined in `config.py` with a local default + environment
 variable override. You do **not** need to modify the code to redirect outputs
-elsewhere — use `.env` or shell variables.
+elsewhere — set environment variables (no `.env` file is read): `GEX_DATA_DIR`,
+`NQ_FULL_JSON`, `ES_FULL_JSON`, `CLAUDE_CMD`, `GEX_LOG_LEVEL`, `GEX_LOG_FILE`,
+`GEX_HISTORY_MAX_DAYS`, `GEX_INTRADAY_HISTORY_MAX_DAYS`, `OFK_BROWSER_VISIBLE=1`
+(show the CME browser window, normally kept off-screen).
 
-Available variables: see `.env.example`.
+Market dates follow New York time (`config.MARKET_TZ`) on any machine timezone.
 
 ---
 
@@ -110,4 +108,4 @@ indicator settings to point to the file produced by this pipeline, for example:
 ```
 
 Or redirect the pipeline to write directly to the ATAS folder via
-`NQ_FULL_JSON` in `.env`.
+the `NQ_FULL_JSON` environment variable.

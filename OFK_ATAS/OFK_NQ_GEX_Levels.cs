@@ -17,12 +17,9 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
-using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Interop;
-using System.Windows.Media;
 using ATAS.Indicators;
 using OFT.Rendering.Context;
+using OFT.Rendering.Control;
 using OFT.Rendering.Tools;
 using DrawingColor = System.Drawing.Color;
 
@@ -45,7 +42,7 @@ namespace OFK_GEX
         #region 01.Source
 
         [Display(Name = "JSON Path", GroupName = "01.Source", Order = 1)]
-        public string JsonPath { get; set; } = @"C:\OFK_Atas_GEX\OFK_GEX_Pipeline\data\full_levels_NQ.json";
+        public string JsonPath { get; set; } = Path.Combine(OfkEnv.Data, "full_levels_NQ.json");
 
         [Display(Name = "Refresh (minutes)", GroupName = "01.Source", Order = 2)]
         [Range(1, 240)]
@@ -309,33 +306,41 @@ namespace OFK_GEX
         #region 09.Floating Panel
 
         [Display(Name = "Show panel", GroupName = "09.Floating Panel", Order = 1)]
-        public bool ShowPanel
-        {
-            get => _showPanel;
-            set
-            {
-                _showPanel = value;
-                Application.Current?.Dispatcher?.BeginInvoke(new Action(() =>
-                {
-                    if (_showPanel  && !_panelOpen) OpenPanel();
-                    else if (!_showPanel && _panelOpen) ClosePanel();
-                }));
-            }
-        }
-        private bool _showPanel = true;
+        public bool ShowPanel { get; set; } = true;
+
+        [Display(Name = "Panel collapsed (click the header)", GroupName = "09.Floating Panel", Order = 10)]
+        public bool PanelCollapsed { get; set; } = false;
+
+        [Display(Name = "Panel X (px)", GroupName = "09.Floating Panel", Order = 11)]
+        [Range(0, 5000)]
+        public int PanelX { get; set; } = 3;
+
+        // Renamed from PanelY: drops the 40 px saved by the previous build (the
+        // panel now sits at the very top and shifts ATAS' own overlays aside).
+        [Display(Name = "Panel Y (px)", GroupName = "09.Floating Panel", Order = 12)]
+        [Range(0, 5000)]
+        public int PanelTop { get; set; } = 3;
+
+        [Display(Name = "Panel font size", GroupName = "09.Floating Panel", Order = 13)]
+        [Range(7, 16)]
+        public int PanelFontSize { get; set; } = 9;
+
+        [Display(Name = "Panel opacity (%)", GroupName = "09.Floating Panel", Order = 14)]
+        [Range(20, 100)]
+        public int PanelOpacity { get; set; } = 90;
 
         [Display(Name = "Python path (exe)", GroupName = "09.Floating Panel", Order = 2)]
-        public string PythonExePath { get; set; } = "python.exe";
+        public string PythonExePath { get; set; } = OfkEnv.PythonExe;
 
         [Display(Name = "Script .py path", GroupName = "09.Floating Panel", Order = 3)]
-        public string ScriptPath { get; set; } = @"C:\OFK_Atas_GEX\OFK_GEX_Pipeline\run_morning_NQ.py";
+        public string ScriptPath { get; set; } = Path.Combine(OfkEnv.Pipeline, "run_morning_NQ.py");
 
         [Display(Name = "Briefing PDF folder", GroupName = "09.Floating Panel", Order = 4)]
-        public string BriefingDir { get; set; } = @"C:\OFK_Atas_GEX\OFK_GEX_Pipeline\data";
+        public string BriefingDir { get; set; } = OfkEnv.Data;
 
         [Display(Name = "Intraday refresh script", GroupName = "09.Floating Panel", Order = 5,
                  Description = "Background .py script launched when 'Intraday loop' is ON")]
-        public string IntradayRefreshScriptPath { get; set; } = @"C:\OFK_Atas_GEX\OFK_GEX_Pipeline\run_intraday_refresh.py";
+        public string IntradayRefreshScriptPath { get; set; } = Path.Combine(OfkEnv.Pipeline, "run_intraday_refresh.py");
 
         #endregion
 
@@ -416,7 +421,7 @@ namespace OFK_GEX
 
         [Display(Name = "Intraday snapshots folder", GroupName = "12.Intraday Replay", Order = 1,
                  Description = "Path to folder of timestamped snapshots (5 min) for replay")]
-        public string IntradayHistoryDir { get; set; } = @"C:\OFK_Atas_GEX\OFK_GEX_Pipeline\data\history\intraday";
+        public string IntradayHistoryDir { get; set; } = Path.Combine(OfkEnv.Data, "history", "intraday");
 
         #endregion
 
@@ -427,17 +432,16 @@ namespace OFK_GEX
         private string   _loadedDate  = "";
         private bool     _levelsLoaded = false;
         private DateTime _lastLoadTime = DateTime.MinValue;
+        private DateTime _jsonSeen, _jsonChecked; // JSON last write already loaded / last disk check
 
         // Intraday replay
         private volatile bool _replayMode = false;
         private DateTime      _replayTimestamp = DateTime.MinValue;
-        private Window        _replayWindow = null;
-        private Button        _btnReplay = null;
 
         // Intraday loop refresh (background process)
         private Process?      _loopProcess = null;
         private volatile bool _loopRunning = false;
-        private Button        _btnLoop = null;
+        private DateTime      _loopStartedAt = DateTime.MinValue;
 
         // Alert anti-spam: key → last emission
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _lastAlerts = new();
@@ -462,13 +466,7 @@ namespace OFK_GEX
 
         // Font managed dynamically via GetLabelFont() which respects LabelFontSize.
 
-        private Window    _panelWindow = null;
-        private TextBlock _infoText    = null;
-        private Button    _btnRefresh  = null;
-        private Button    _btnBriefing = null;
-        private TextBlock _statusText  = null;
-        private bool      _isRunning   = false;
-        private bool      _panelOpen   = false;
+        private volatile bool _isRunning = false;
 
         #endregion
 
@@ -486,18 +484,21 @@ namespace OFK_GEX
             if (bar == 0)
             {
                 if (!_levelsLoaded) LoadLevels();
-                Application.Current?.Dispatcher?.BeginInvoke(new Action(() =>
-                {
-                    if (ShowPanel && !_panelOpen) OpenPanel();
-                }));
             }
-            if (!_levelsLoaded) return;
+            if (!_levelsLoaded)
+            {
+                // Not loaded yet (file missing / invalid): retry when it changes on disk.
+                if (bar >= CurrentBar - 1 && OfkUtils.FileChanged(JsonPath, _jsonSeen, ref _jsonChecked))
+                    LoadLevels();
+                if (!_levelsLoaded) return;
+            }
 
             bool isLastBar = bar >= CurrentBar - 1;
-            bool newDay    = _loadedDate != DateTime.Today.ToString("yyyy-MM-dd");
+            bool newDay    = _loadedDate != OfkEnv.NowEt.ToString("yyyy-MM-dd");
             bool elapsed   = RefreshMinutes > 0 &&
                              (DateTime.Now - _lastLoadTime).TotalMinutes >= RefreshMinutes;
-            if (isLastBar && (newDay || elapsed)) { LoadLevels(); UpdatePanelText(); }
+            bool changed   = isLastBar && OfkUtils.FileChanged(JsonPath, _jsonSeen, ref _jsonChecked);
+            if (isLastBar && (newDay || elapsed || changed)) { LoadLevels(); UpdatePanelText(); }
 
             // Scalping alerts (live bar only)
             if (isLastBar && EnableScalpingAlerts) CheckAlerts(bar);
@@ -637,7 +638,12 @@ namespace OFK_GEX
                     {
                         if (File.Exists(JsonPath))
                         {
-                            var ageMin = (DateTime.Now - File.GetLastWriteTime(JsonPath)).TotalMinutes;
+                            // Age since the later of the last write and the loop start:
+                            // right after turning the loop ON the old file is not "frozen"
+                            // (the first cycle needs a few seconds to rewrite it).
+                            var lastWrite = File.GetLastWriteTime(JsonPath);
+                            var since = lastWrite > _loopStartedAt ? lastWrite : _loopStartedAt;
+                            var ageMin = (DateTime.Now - since).TotalMinutes;
                             if (ageMin > 10)
                                 FireAlert("stale_data",
                                     $"Intraday loop active but JSON frozen ({(int)ageMin}min) — check the Python process",
@@ -693,10 +699,9 @@ namespace OFK_GEX
 
         private static bool IsLastHourRTH()
         {
-            // RTH NYSE close = 16:00 ET = 20:00 UTC (EDT) or 21:00 UTC (EST)
-            // Last hour ≈ 15:00-16:00 ET = 19-20 UTC or 20-21 UTC
-            int h = DateTime.UtcNow.Hour;
-            return h == 19 || h == 20;
+            // Last RTH hour = 15:00-16:00 New York time. Fixed UTC hours were
+            // off by 1 h half of the year (US DST); OfkEnv.NowEt is DST-aware.
+            return OfkEnv.NowEt.Hour == 15;
         }
 
         private void FireAlert(string key, string message, IndicatorCandle candle)
@@ -706,8 +711,8 @@ namespace OFK_GEX
             try
             {
                 string sound = string.IsNullOrWhiteSpace(AlertSoundFile) ? "alert1.wav" : AlertSoundFile;
-                var bg = System.Windows.Media.Color.FromArgb(255, 50, 50, 50);
-                var fg = System.Windows.Media.Color.FromArgb(255, 255, 200, 80);
+                var bg = DrawingColor.FromArgb(255, 50, 50, 50);
+                var fg = DrawingColor.FromArgb(255, 255, 200, 80);
                 AddAlert(sound, InstrumentInfo?.Instrument ?? "", message, bg, fg);
                 _lastAlerts[key] = DateTime.Now;
 
@@ -816,7 +821,8 @@ namespace OFK_GEX
                 string logPath = Path.Combine(dir, AlertLogFileName);
                 if (!File.Exists(logPath)) return;
 
-                DateTime today = DateTime.Today;
+                // "Today" = current US session (New York date); log lines are local time.
+                DateTime today = OfkEnv.NowEt.Date;
                 DateTime weekCutoff = today.AddDays(-7);
                 var fresh = new System.Collections.Generic.Dictionary<string, (int today, int week)>();
 
@@ -834,8 +840,9 @@ namespace OFK_GEX
                     string key = line.Substring(b1 + 1, b2 - b1 - 1);
                     if (string.IsNullOrEmpty(key)) continue;
 
-                    int isToday = dt >= today ? 1 : 0;
-                    int isWeek  = dt >= weekCutoff ? 1 : 0;
+                    DateTime dtEt = OfkEnv.ToEt(DateTime.SpecifyKind(dt, DateTimeKind.Local));
+                    int isToday = dtEt >= today ? 1 : 0;
+                    int isWeek  = dtEt >= weekCutoff ? 1 : 0;
                     if (!fresh.TryGetValue(key, out var cur)) cur = (0, 0);
                     fresh[key] = (cur.today + isToday, cur.week + isWeek);
                 }
@@ -880,175 +887,9 @@ namespace OFK_GEX
 
         // ── Panel ─────────────────────────────────────────────────────────────
 
-        private void OpenPanel()
-        {
-            if (_panelOpen) return;
-            var lv = _levels;
-
-            var bgColor      = System.Windows.Media.Color.FromRgb(22, 27, 39);
-            var bgDark       = System.Windows.Media.Color.FromRgb(13, 17, 23);
-            var borderColor  = System.Windows.Media.Color.FromRgb(33, 41, 61);
-            var textColor    = System.Windows.Media.Color.FromRgb(201, 209, 217);
-            var textDimColor = System.Windows.Media.Color.FromRgb(139, 148, 158);
-            var accentBlue   = System.Windows.Media.Color.FromRgb(79, 139, 209);
-
-            _panelWindow = new Window
-            {
-                Title = "OFK NQ GEX Levels", Width = 430,
-                Height = 720, MinWidth = 380, MinHeight = 380,
-                Topmost = true,
-                ResizeMode = ResizeMode.CanResizeWithGrip,
-                WindowStartupLocation = WindowStartupLocation.Manual,
-                Left = 80, Top = 80,
-                Background = new SolidColorBrush(bgColor),
-                ShowInTaskbar = false,
-                FontFamily = new System.Windows.Media.FontFamily("Segoe UI"),
-                FontSize = 12,
-            };
-
-            var root  = new Border { Background = new SolidColorBrush(bgColor), BorderBrush = new SolidColorBrush(borderColor), BorderThickness = new Thickness(1) };
-            var dock  = new DockPanel { LastChildFill = true };
-
-            // Header (sticky top)
-            var hdr = new Border { Background = new SolidColorBrush(bgDark), BorderBrush = new SolidColorBrush(borderColor), BorderThickness = new Thickness(0,0,0,1), Padding = new Thickness(12,8,12,8) };
-            hdr.Child = new TextBlock { Text = "OFK NQ GEX Levels", Foreground = new SolidColorBrush(accentBlue), FontSize = 13, FontWeight = FontWeights.SemiBold };
-            DockPanel.SetDock(hdr, Dock.Top);
-            dock.Children.Add(hdr);
-
-            // Info text (scrollable, added LAST for LastChildFill)
-            var infoSec = new Border { Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(18,22,30)), Padding = new Thickness(12,10,12,10), BorderBrush = new SolidColorBrush(borderColor), BorderThickness = new Thickness(0,0,0,1) };
-            _infoText = new TextBlock { FontFamily = new System.Windows.Media.FontFamily("Consolas"), FontSize = 11, Foreground = new SolidColorBrush(textColor), TextWrapping = TextWrapping.NoWrap, LineHeight = 18 };
-            infoSec.Child = _infoText;
-
-            // Buttons (sticky bottom, added IN REVERSE ORDER because DockPanel stacks from bottom)
-            var btnSec = new Border { Padding = new Thickness(12,8,12,8), BorderBrush = new SolidColorBrush(borderColor), BorderThickness = new Thickness(0,1,0,0) };
-            var grid = new Grid();
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(8) });
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-
-            _btnRefresh = new Button
-            {
-                Content = "▶  GEX LEVELS NQ", Height = 32,
-                Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(20,40,90)),
-                Foreground = new SolidColorBrush(accentBlue),
-                FontSize = 11, FontFamily = new System.Windows.Media.FontFamily("Segoe UI"),
-                FontWeight = FontWeights.SemiBold,
-                BorderBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(79,139,209)),
-                BorderThickness = new Thickness(1), Cursor = System.Windows.Input.Cursors.Hand,
-                Template = CreateButtonTemplate(),
-            };
-            _btnRefresh.Click += (s, e) => RunScript();
-            Grid.SetColumn(_btnRefresh, 0);
-            grid.Children.Add(_btnRefresh);
-
-            _btnBriefing = new Button
-            {
-                Content = "📄  Briefing", Height = 32,
-                Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(20,55,40)),
-                Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(63,185,80)),
-                FontSize = 11, FontFamily = new System.Windows.Media.FontFamily("Segoe UI"),
-                FontWeight = FontWeights.SemiBold,
-                BorderBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(63,185,80)),
-                BorderThickness = new Thickness(1), Cursor = System.Windows.Input.Cursors.Hand,
-                Template = CreateButtonTemplate(),
-            };
-            _btnBriefing.Click += (s, e) => OpenBriefing();
-            Grid.SetColumn(_btnBriefing, 2);
-            grid.Children.Add(_btnBriefing);
-
-            btnSec.Child = grid;
-
-            // Intraday Replay button (2nd row, full width)
-            var replaySec = new Border { Padding = new Thickness(12,0,12,8), BorderBrush = new SolidColorBrush(borderColor), BorderThickness = new Thickness(0,0,0,1) };
-            _btnReplay = new Button
-            {
-                Content = "🎬  Intraday replay", Height = 32,
-                Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(60,40,90)),
-                Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(189,147,249)),
-                FontSize = 11, FontFamily = new System.Windows.Media.FontFamily("Segoe UI"),
-                FontWeight = FontWeights.SemiBold,
-                BorderBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(189,147,249)),
-                BorderThickness = new Thickness(1), Cursor = System.Windows.Input.Cursors.Hand,
-                Template = CreateButtonTemplate(),
-            };
-            _btnReplay.Click += (s, e) => OpenReplayWindow();
-            replaySec.Child = _btnReplay;
-
-            // Intraday Loop button (3rd row, full width, ON/OFF toggle)
-            var loopSec = new Border { Padding = new Thickness(12,0,12,8), BorderBrush = new SolidColorBrush(borderColor), BorderThickness = new Thickness(0,0,0,1) };
-            _btnLoop = new Button
-            {
-                Height = 32,
-                FontSize = 11,
-                FontFamily = new System.Windows.Media.FontFamily("Segoe UI"),
-                FontWeight = FontWeights.SemiBold,
-                BorderThickness = new Thickness(1),
-                Cursor = System.Windows.Input.Cursors.Hand,
-                Template = CreateButtonTemplate(),
-            };
-            _btnLoop.Click += (s, e) => ToggleLoop();
-            loopSec.Child = _btnLoop;
-            UpdateLoopButton();
-
-            // Status
-            var statusSec = new Border { Background = new SolidColorBrush(bgDark), Padding = new Thickness(12,5,12,5) };
-            _statusText = new TextBlock { FontFamily = new System.Windows.Media.FontFamily("Segoe UI"), FontSize = 10, Foreground = new SolidColorBrush(textDimColor), Text = lv.Loaded ? $"✅ JSON loaded — {lv.TradeDate}  (spot {lv.SpotLoaded:F0})" : "⚠ JSON not loaded — check JSON Path" };
-            statusSec.Child = _statusText;
-
-            // Stack elements at the bottom of DockPanel: add order = bottom to top
-            DockPanel.SetDock(statusSec, Dock.Bottom);  dock.Children.Add(statusSec);
-            DockPanel.SetDock(loopSec,   Dock.Bottom);  dock.Children.Add(loopSec);
-            DockPanel.SetDock(replaySec, Dock.Bottom);  dock.Children.Add(replaySec);
-            DockPanel.SetDock(btnSec,    Dock.Bottom);  dock.Children.Add(btnSec);
-
-            // ScrollViewer in the middle (LastChildFill = true → takes all remaining space)
-            var scroll = new ScrollViewer
-            {
-                Content = infoSec,
-                VerticalScrollBarVisibility   = ScrollBarVisibility.Auto,
-                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-                PanningMode                   = PanningMode.VerticalOnly,
-                Background                    = new SolidColorBrush(System.Windows.Media.Color.FromRgb(18,22,30)),
-            };
-            dock.Children.Add(scroll);
-
-            root.Child = dock;
-            _panelWindow.Content = root;
-            _panelWindow.SourceInitialized += (s, e) => ApplyDarkTitleBar(_panelWindow);
-            _panelWindow.Closed += (s, e) => { _panelOpen = false; _panelWindow = null; _infoText = null; _btnRefresh = null; _btnBriefing = null; _btnReplay = null; _btnLoop = null; _statusText = null; };
-            UpdatePanelText();
-            _panelWindow.Show();
-            _panelOpen = true;
-        }
-
-        private void ClosePanel() { _panelWindow?.Close(); _panelOpen = false; }
-
-        // ── Dark title bar (Windows 10 1809+) ─────────────────────────────────
-        [DllImport("dwmapi.dll")]
-        private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
-        private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;          // Win10 1903+
-        private const int DWMWA_USE_IMMERSIVE_DARK_MODE_LEGACY = 19;   // Win10 1809-1903
-
-        private static void ApplyDarkTitleBar(Window w)
-        {
-            try
-            {
-                IntPtr hwnd = new WindowInteropHelper(w).Handle;
-                if (hwnd == IntPtr.Zero) return;
-                int useDark = 1;
-                if (DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ref useDark, sizeof(int)) != 0)
-                    DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_LEGACY, ref useDark, sizeof(int));
-            }
-            catch { /* DWM API not available — silent fallback */ }
-        }
-
         private void UpdatePanelText()
         {
-            if (_infoText == null) return;
-            Application.Current?.Dispatcher?.BeginInvoke(new Action(() =>
             {
-                if (_infoText == null) return;
                 var lv = _levels;
 
                 string gReg  = lv.GexRegime > 0 ? "POSITIVE ● pinning" : lv.GexRegime < 0 ? "NEGATIVE ● explosive" : "NEUTRAL";
@@ -1113,7 +954,7 @@ namespace OFK_GEX
 
                 string alertStatsLine = $"━━ ALERT STATS (day / 7d) ━━\n{FormatAlertStats()}\n";
 
-                _infoText.Text =
+                _panelText =
                     $"═══ OPTIONS GREEKS NQ  ({lv.TradeDate}) ═══\n\n" +
                     sizingLine +
                     alertStatsLine +
@@ -1143,12 +984,162 @@ namespace OFK_GEX
                     $"  Term IV     {termStrStr}\n" +
                     $"  Call Wall   {lv.CallWall:F0}     Put Wall  {lv.PutWall:F0}\n" +
                     oi1 + oi2 + oi3;
+            }
+        }
 
-                if (_statusText != null)
-                    _statusText.Text = lv.Loaded
-                        ? $"✅ JSON loaded — {lv.TradeDate}  (spot {lv.SpotLoaded:F0})"
-                        : "⚠ JSON not loaded — check JSON Path";
-            }));
+        // ── ATAS X: on-chart panel (replaces the WPF floating window) ─────────
+        // ATAS X rejects WPF (Window/Button/Dispatcher): the panel is drawn in
+        // OnRender and its buttons are hit-tested in ProcessMouseClick.
+        private volatile string _panelText = "";
+        private volatile string _statusMsg = "";
+        private System.Collections.Generic.List<GexLoader.SnapshotInfo> _replaySnaps = new();
+        private int _replayIdx = -1;
+        private volatile HitArea[] _hits = Array.Empty<HitArea>();
+        private readonly record struct HitArea(Rectangle Rect, Action Action);
+
+        private void SetStatus(string msg)
+        {
+            _statusMsg = msg;
+            try { RedrawChart(); } catch { }
+        }
+
+        private static string Short(string s) => s.Substring(0, Math.Min(60, s.Length));
+
+        // ATAS draws its status line (OHLC + latency badge) and the indicator list
+        // at the top-left of the price pane. Like the native TradingPanel, shift
+        // them right of the panel while it is shown; restore 3 px (ATAS default).
+        private int _overlayOffset = -1; // -1 = untouched
+
+        private void SetChartOverlayOffset(int x)
+        {
+            if (x == _overlayOffset || ChartInfo == null) return;
+            try
+            {
+                ChartInfo.IndicatorsListHorizontalOffset = x;
+                ChartInfo.StatusLineHorizontalOffset     = x;
+                _overlayOffset = x;
+            }
+            catch { }
+        }
+
+        private void RestoreChartOverlay()
+        {
+            if (_overlayOffset < 0) return;
+            SetChartOverlayOffset(3);
+            _overlayOffset = -1;
+        }
+
+        private void DrawPanel(RenderContext ctx)
+        {
+            if (!ShowPanel) { _hits = Array.Empty<HitArea>(); RestoreChartOverlay(); return; }
+            var lv     = _levels;
+            var font   = new RenderFont("Consolas", PanelFontSize);
+            var bFont  = new RenderFont("Segoe UI", PanelFontSize);
+            var hFont  = new RenderFont("Segoe UI", PanelFontSize + 1, FontStyle.Bold);
+            int a      = Math.Max(20, Math.Min(100, PanelOpacity)) * 255 / 100;
+            var cBg    = DrawingColor.FromArgb(a, 13, 17, 23);
+            var cBord  = DrawingColor.FromArgb(255, 33, 41, 61);
+            var cText  = DrawingColor.FromArgb(255, 201, 209, 217);
+            var cDim   = DrawingColor.FromArgb(255, 139, 148, 158);
+            var cAcc   = DrawingColor.FromArgb(255, 79, 139, 209);
+
+            string header = (PanelCollapsed ? "► " : "▼ ") + "OFK GEX NQ" + (_replayMode ? $"   REPLAY {_replayTimestamp:HH:mm}" : "");
+            string status = !string.IsNullOrEmpty(_statusMsg) ? _statusMsg
+                          : lv.Loaded ? $"OK: JSON loaded — {lv.TradeDate}  (spot {lv.SpotLoaded:F0})"
+                          : "! JSON not loaded — check JSON Path";
+            string[] lines = PanelCollapsed ? Array.Empty<string>() : (_panelText ?? "").TrimEnd('\n').Split('\n');
+
+            var rows = new[]
+            {
+                new (string label, DrawingColor color, Action action)[]
+                {
+                    (_isRunning ? "Running…" : "► GEX LEVELS NQ", cAcc, () => RunScript()),
+                    ("Briefing PDF", DrawingColor.FromArgb(255, 63, 185, 80), () => OpenBriefing()),
+                },
+                new (string label, DrawingColor color, Action action)[]
+                {
+                    ("◄ Replay", DrawingColor.FromArgb(255, 189, 147, 249), () => ReplayStep(-1)),
+                    (_replayMode ? "Replay ►" : "● Live", _replayMode ? DrawingColor.FromArgb(255, 189, 147, 249) : cDim, () => ReplayStep(+1)),
+                    (_loopRunning ? "■ Loop: ON" : "► Loop: OFF",
+                        _loopRunning ? DrawingColor.FromArgb(255, 63, 185, 80) : cDim, () => ToggleLoop()),
+                },
+            };
+
+            int pad   = 8;
+            int lineH = (int)ctx.MeasureString("Ag", font).Height + 1;
+            int headH = (int)ctx.MeasureString(header, hFont).Height + 8;
+            int btnH  = (int)ctx.MeasureString("Ag", bFont).Height + 10;
+
+            var region = ChartInfo?.PriceChartContainer?.Region ?? Rectangle.Empty;
+            if (region.Height <= 0) region = new Rectangle(0, 0, ChartArea.Width, ChartArea.Height);
+            int x0 = region.X + PanelX, y0 = region.Y + PanelTop;
+
+            // Header, buttons and status always fit; the text below is cut at the
+            // bottom of the price pane (sub-panes such as the Context Score start
+            // there) with a "+N lines" note instead of hiding the buttons.
+            int fixedH = headH + rows.Length * (btnH + 4) + lineH + pad;
+            int room   = region.Bottom - y0 - fixedH - pad;
+            int fit    = lines.Length == 0 ? 0 : Math.Max(0, (room - pad) / lineH);
+            bool cut   = fit < lines.Length;
+            int shown  = cut ? Math.Max(0, fit - 1) : lines.Length;
+            string more = cut ? $"… +{lines.Length - shown} lines (collapse or lower the font size)" : null;
+
+            int w = Math.Max(300, (int)ctx.MeasureString(header, hFont).Width + 2 * pad);
+            for (int i = 0; i < shown; i++) w = Math.Max(w, (int)ctx.MeasureString(lines[i], font).Width + 2 * pad);
+            w = Math.Max(w, (int)ctx.MeasureString(status, bFont).Width + 2 * pad);
+
+            int textH = shown * lineH + (more != null ? lineH : 0);
+            int h = fixedH + (textH > 0 ? pad + textH : 0) + pad;
+            ctx.FillRectangle(cBg, new Rectangle(x0, y0, w, h));
+            ctx.DrawRectangle(new RenderPen(cBord), new Rectangle(x0, y0, w, h));
+            ctx.FillRectangle(cAcc, new Rectangle(x0, y0, w, 2));
+            SetChartOverlayOffset(x0 - region.X + w + 6);
+
+            var hits = new System.Collections.Generic.List<HitArea>();
+            hits.Add(new HitArea(new Rectangle(x0, y0, w, headH), () => PanelCollapsed = !PanelCollapsed));
+            ctx.DrawString(header, hFont, cText, x0 + pad, y0 + 4);
+
+            int y = y0 + headH;
+            foreach (var row in rows)
+            {
+                int bw = (w - 2 * pad - (row.Length - 1) * 4) / row.Length;
+                for (int i = 0; i < row.Length; i++)
+                {
+                    var (label, color, action) = row[i];
+                    var r = new Rectangle(x0 + pad + i * (bw + 4), y, bw, btnH);
+                    ctx.FillRectangle(DrawingColor.FromArgb(200, color.R / 5, color.G / 5, color.B / 5), r);
+                    ctx.DrawRectangle(new RenderPen(color), r);
+                    var ts = ctx.MeasureString(label, bFont);
+                    ctx.DrawString(label, bFont, color, r.X + (bw - (int)ts.Width) / 2, r.Y + (btnH - (int)ts.Height) / 2);
+                    hits.Add(new HitArea(r, action));
+                }
+                y += btnH + 4;
+            }
+            ctx.DrawString(status, bFont, cDim, x0 + pad, y);
+            y += lineH + pad;
+
+            for (int i = 0; i < shown; i++)
+            {
+                var l = lines[i];
+                bool section = l.StartsWith("━━") || l.StartsWith("═══");
+                ctx.DrawString(l, font, section ? cAcc : cText, x0 + pad, y);
+                y += lineH;
+            }
+            if (more != null) ctx.DrawString(more, bFont, cDim, x0 + pad, y);
+            _hits = hits.ToArray();
+        }
+
+        public override bool ProcessMouseClick(RenderControlMouseEventArgs e)
+        {
+            if (e.Button != RenderControlMouseButtons.Left) return base.ProcessMouseClick(e);
+            foreach (var hit in _hits)
+            {
+                if (!hit.Rect.Contains(e.X, e.Y)) continue;
+                try { hit.Action(); } catch (Exception ex) { _statusMsg = "ERROR: " + Short(ex.Message); }
+                try { RedrawChart(); } catch { }
+                return true;
+            }
+            return base.ProcessMouseClick(e);
         }
 
         // ── RunScript ─────────────────────────────────────────────────────────
@@ -1156,69 +1147,56 @@ namespace OFK_GEX
         private void RunScript()
         {
             if (_isRunning) return;
-            if (!File.Exists(ScriptPath))
-            {
-                Application.Current?.Dispatcher?.Invoke(() => { if (_statusText != null) _statusText.Text = "❌ Script not found: " + ScriptPath; });
-                return;
-            }
+            if (!File.Exists(ScriptPath)) { SetStatus("ERROR: Script not found: " + ScriptPath); return; }
 
-            // Immediate reload of current JSON (in case it was
-            // updated by an external run — manual or via run_intraday_refresh).
-            // This way the user sees fresh data on click,
-            // without waiting for the new run to complete.
+            // Immediate reload of the current JSON (it may have been updated by
+            // an external run), so the user sees fresh data on click.
             LoadLevels();
-            Application.Current?.Dispatcher?.Invoke(() => {
-                UpdatePanelText();
-                var lv = _levels;
-                if (_statusText != null && lv.Loaded)
-                    _statusText.Text = $"✅ JSON reloaded — {lv.TradeDate}";
-            });
-            try { RedrawChart(); } catch { }
-
             _isRunning = true;
-            Application.Current?.Dispatcher?.Invoke(() =>
-            {
-                if (_btnRefresh  != null) { _btnRefresh.Content = "⏳ In progress…"; _btnRefresh.Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(220,80,60,0)); _btnRefresh.Foreground = System.Windows.Media.Brushes.Orange; _btnRefresh.IsEnabled = false; }
-                if (_btnBriefing != null) _btnBriefing.IsEnabled = false;
-                if (_statusText  != null) _statusText.Text = "⏳ run_morning_NQ.py in progress (CME NQ + CBOE QQQ + Claude + PDF)…";
-            });
+            SetStatus("… run_morning_NQ.py in progress (CME + CBOE + Claude + PDF)…");
             Task.Run(() =>
             {
                 try
                 {
+                    // No console window: a visible console steals the keyboard focus
+                    // from ATAS (and the CME collector hands the focus back to it).
+                    // The full output goes to a log file instead, for diagnosis.
+                    string logPath = Path.Combine(Path.GetDirectoryName(JsonPath) ?? OfkEnv.Data, "logs", "run_morning_NQ_last.log");
+                    Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
                     var psi = new ProcessStartInfo
                     {
-                        FileName         = OfkUtils.ResolveExe(PythonExePath),
-                        Arguments        = "\"" + ScriptPath + "\" --ignore-holiday",
-                        UseShellExecute  = false,
-                        CreateNoWindow   = false,
-                        WindowStyle      = ProcessWindowStyle.Normal,
-                        WorkingDirectory = System.IO.Path.GetDirectoryName(ScriptPath) ?? @"C:\OFK_Atas_GEX\OFK_GEX_Pipeline",
+                        FileName               = OfkUtils.ResolveExe(PythonExePath),
+                        Arguments              = "\"" + ScriptPath + "\" --ignore-holiday",
+                        UseShellExecute        = false,
+                        CreateNoWindow         = true,
+                        WindowStyle            = ProcessWindowStyle.Hidden,
+                        WorkingDirectory       = System.IO.Path.GetDirectoryName(ScriptPath) ?? OfkEnv.Pipeline,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError  = true,
                     };
+                    // Piped stdout defaults to cp1252 on Windows: box-drawing chars would crash Python.
+                    psi.Environment["PYTHONIOENCODING"] = "utf-8";
+                    psi.Environment["PYTHONUTF8"]       = "1";
+                    using var log  = new StreamWriter(logPath, false, new System.Text.UTF8Encoding(false)) { AutoFlush = true };
+                    var logSync = new object();
                     using var proc = Process.Start(psi);
-                    bool exited = proc?.WaitForExit(300_000) ?? false;
-                    int exitCode = exited ? (proc?.ExitCode ?? -1) : -99;
+                    if (proc == null) throw new InvalidOperationException("python did not start");
+                    // Consume both streams async: a full pipe buffer would freeze Python.
+                    proc.OutputDataReceived += (s, e) => { if (e.Data != null) lock (logSync) log.WriteLine(e.Data); };
+                    proc.ErrorDataReceived  += (s, e) => { if (e.Data != null) lock (logSync) log.WriteLine(e.Data); };
+                    proc.BeginOutputReadLine();
+                    proc.BeginErrorReadLine();
+                    bool exited = proc.WaitForExit(300_000);
+                    if (!exited) { try { proc.Kill(entireProcessTree: true); } catch { } }
+                    else proc.WaitForExit(); // drain the async readers
+                    int exitCode = exited ? proc.ExitCode : -99;
                     if (exitCode == 0) LoadLevels();
-                    Application.Current?.Dispatcher?.Invoke(() =>
-                    {
-                        string msg = exitCode == 0 ? "✅ Data updated" : $"⚠ Exit {exitCode}";
-                        if (_btnRefresh  != null) { _btnRefresh.Content = "▶  GEX LEVELS NQ"; _btnRefresh.Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(20,40,90)); _btnRefresh.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(79,139,209)); _btnRefresh.IsEnabled = true; }
-                        if (_btnBriefing != null) _btnBriefing.IsEnabled = true;
-                        var lv = _levels;
-                        if (_statusText != null) _statusText.Text = msg + (exitCode == 0 ? $"  —  {lv.TradeDate}" : "");
-                        UpdatePanelText();
-                    });
-                    RedrawChart();
+                    _isRunning = false;
+                    SetStatus(exitCode == 0 ? $"OK: Data updated — {_levels.TradeDate}"
+                              : exitCode == -99 ? "! Timeout (5 min) — see data/logs/run_morning_NQ_last.log"
+                              : $"! Exit {exitCode} — see data/logs/run_morning_NQ_last.log");
                 }
-                catch (Exception ex)
-                {
-                    Application.Current?.Dispatcher?.Invoke(() =>
-                    {
-                        if (_btnRefresh  != null) { _btnRefresh.Content = "▶  GEX LEVELS NQ"; _btnRefresh.IsEnabled = true; }
-                        if (_btnBriefing != null) _btnBriefing.IsEnabled = true;
-                        if (_statusText  != null) _statusText.Text = "❌ " + ex.Message.Substring(0, Math.Min(60, ex.Message.Length));
-                    });
-                }
+                catch (Exception ex) { _isRunning = false; SetStatus("ERROR: " + Short(ex.Message)); }
                 finally { _isRunning = false; }
             });
         }
@@ -1229,13 +1207,120 @@ namespace OFK_GEX
         {
             try
             {
-                if (!Directory.Exists(BriefingDir)) { if (_statusText != null) Application.Current?.Dispatcher?.Invoke(() => _statusText.Text = "❌ PDF folder not found: " + BriefingDir); return; }
+                if (!Directory.Exists(BriefingDir)) { SetStatus("ERROR: PDF folder not found: " + BriefingDir); return; }
                 var pdfs = Directory.GetFiles(BriefingDir, "briefing_NQ_*.pdf").OrderByDescending(f => f).ToArray();
-                if (pdfs.Length == 0) { if (_statusText != null) Application.Current?.Dispatcher?.Invoke(() => _statusText.Text = "⚠ No PDF found"); return; }
+                if (pdfs.Length == 0) { SetStatus("! No PDF found"); return; }
                 Process.Start(new ProcessStartInfo(pdfs[0]) { UseShellExecute = true });
-                if (_statusText != null) Application.Current?.Dispatcher?.Invoke(() => _statusText.Text = "📄 " + Path.GetFileName(pdfs[0]));
+                SetStatus("PDF: " + Path.GetFileName(pdfs[0]));
             }
-            catch (Exception ex) { if (_statusText != null) Application.Current?.Dispatcher?.Invoke(() => _statusText.Text = "❌ " + ex.Message.Substring(0, Math.Min(60, ex.Message.Length))); }
+            catch (Exception ex) { SetStatus("ERROR: " + Short(ex.Message)); }
+        }
+
+        public override void Dispose()
+        {
+            // Kill the intraday loop process if still running
+            try
+            {
+                if (_loopProcess != null && !_loopProcess.HasExited)
+                {
+                    try { _loopProcess.Kill(entireProcessTree: true); } catch { }
+                    _loopProcess.WaitForExit(1000);
+                }
+            }
+            catch { }
+            _loopProcess = null;
+            _loopRunning = false;
+            try { RestoreChartOverlay(); } catch { }
+            base.Dispose();
+        }
+
+        // ── Intraday loop refresh: background process toggle ─────────────────
+        private void ToggleLoop()
+        {
+            if (_loopRunning) StopLoop();
+            else              StartLoop();
+        }
+
+        private void StartLoop()
+        {
+            if (_loopRunning) return;
+            if (!File.Exists(IntradayRefreshScriptPath)) { SetStatus("ERROR: Intraday script not found: " + IntradayRefreshScriptPath); return; }
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName               = OfkUtils.ResolveExe(PythonExePath),
+                    Arguments              = "\"" + IntradayRefreshScriptPath + "\" NQ --loop",
+                    UseShellExecute        = false,
+                    CreateNoWindow         = true,
+                    WindowStyle            = ProcessWindowStyle.Hidden,
+                    WorkingDirectory       = System.IO.Path.GetDirectoryName(IntradayRefreshScriptPath)
+                                             ?? OfkEnv.Pipeline,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError  = true,
+                };
+                // Force UTF-8 on Python stdout/stderr: otherwise box-drawing
+                // chars raise UnicodeEncodeError on cp1252 when piped.
+                psi.Environment["PYTHONIOENCODING"] = "utf-8";
+                psi.Environment["PYTHONUTF8"]       = "1";
+                _loopProcess = Process.Start(psi);
+                if (_loopProcess == null) { SetStatus("ERROR: Loop startup failed"); return; }
+                // Consume streams async: a full pipe buffer freezes the Python process.
+                _loopProcess.OutputDataReceived += (s, e) => { /* discard */ };
+                _loopProcess.ErrorDataReceived  += (s, e) => { /* discard */ };
+                try { _loopProcess.BeginOutputReadLine(); } catch { }
+                try { _loopProcess.BeginErrorReadLine();  } catch { }
+                _loopRunning = true;
+                _loopStartedAt = DateTime.Now;
+                var proc = _loopProcess;
+                proc.EnableRaisingEvents = true;
+                proc.Exited += (s, e) =>
+                {
+                    if (!ReferenceEquals(_loopProcess, proc)) return; // stopped/replaced already
+                    _loopRunning = false;
+                    _loopProcess = null;
+                    SetStatus("■ Intraday loop has stopped");
+                };
+                SetStatus($"● Intraday loop ON  (PID {_loopProcess.Id})");
+            }
+            catch (Exception ex) { SetStatus("ERROR: " + Short(ex.Message)); }
+        }
+
+        private void StopLoop()
+        {
+            try
+            {
+                if (_loopProcess != null && !_loopProcess.HasExited)
+                {
+                    try { _loopProcess.Kill(entireProcessTree: true); } catch { }
+                    _loopProcess.WaitForExit(2000);
+                }
+            }
+            catch { }
+            _loopProcess = null;
+            _loopRunning = false;
+            SetStatus("■ Intraday loop OFF");
+        }
+
+        // ── Replay: step through today's 5-min snapshots (◀ older, ▶ newer) ──
+        private void ReplayStep(int dir)
+        {
+            if (!_replayMode)
+            {
+                if (dir > 0) return; // already live
+                _replaySnaps = GexLoader.ListSnapshots(IntradayHistoryDir, "NQ", OfkEnv.NowEt.Date);
+                if (_replaySnaps.Count == 0) { SetStatus("! No intraday snapshot today — turn the intraday loop ON"); return; }
+                _replayIdx = _replaySnaps.Count - 1;
+            }
+            else
+            {
+                int next = _replayIdx + dir;
+                if (next >= _replaySnaps.Count) { ExitReplayMode(); SetStatus("Live"); return; }
+                _replayIdx = Math.Max(0, next);
+            }
+            var snap = _replaySnaps[_replayIdx];
+            LoadReplaySnapshot(snap.Path, snap.Timestamp);
+            SetStatus($"REPLAY snapshot {_replayIdx + 1}/{_replaySnaps.Count}  •  ► past the last = live");
         }
 
         // ── Chart rendering ──────────────────────────────────────────────────
@@ -1243,7 +1328,8 @@ namespace OFK_GEX
         protected override void OnRender(RenderContext context, DrawingLayouts layout)
         {
             var lv = _levels;
-            if (!lv.Loaded || ChartInfo == null) return;
+            if (ChartInfo == null) return;
+            if (!lv.Loaded) { if ((layout & DrawingLayouts.Final) != 0) DrawPanel(context); return; }
             int chartW = ChartArea.Width;
 
             // Zone pinning
@@ -1480,7 +1566,7 @@ namespace OFK_GEX
             if (_replayMode)
             {
                 var rFont = new RenderFont("Arial Bold", 13);
-                string rTxt = $"🎬  REPLAY  {_replayTimestamp:HH:mm}";
+                string rTxt = $"REPLAY  {_replayTimestamp:HH:mm}";
                 var rs = context.MeasureString(rTxt, rFont);
                 int rW = (int)rs.Width + 20;
                 int rH = (int)rs.Height + 8;
@@ -1490,6 +1576,8 @@ namespace OFK_GEX
                 context.FillRectangle(DrawingColor.FromArgb(255, 189, 147, 249), new Rectangle(rx, ry, rW, 2));
                 context.DrawString(rTxt, rFont, DrawingColor.FromArgb(255, 230, 220, 250), rx + 10, ry + 4);
             }
+
+            if ((layout & DrawingLayouts.Final) != 0) DrawPanel(context);
         }
 
         // Dynamic font (LabelFontSize was hard-coded to 9 — bug fix)
@@ -1538,188 +1626,22 @@ namespace OFK_GEX
             ctx.DrawString(label, font, DrawingColor.FromArgb(255, color.R, color.G, color.B), lx+4, ly+2);
         }
 
-        private static System.Windows.Controls.ControlTemplate CreateButtonTemplate()
-        {
-            var t  = new System.Windows.Controls.ControlTemplate(typeof(Button));
-            var b  = new System.Windows.FrameworkElementFactory(typeof(Border));
-            b.SetBinding(Border.BackgroundProperty,    new System.Windows.Data.Binding("Background")    { RelativeSource = System.Windows.Data.RelativeSource.TemplatedParent });
-            b.SetBinding(Border.BorderBrushProperty,   new System.Windows.Data.Binding("BorderBrush")   { RelativeSource = System.Windows.Data.RelativeSource.TemplatedParent });
-            b.SetBinding(Border.BorderThicknessProperty,new System.Windows.Data.Binding("BorderThickness"){ RelativeSource = System.Windows.Data.RelativeSource.TemplatedParent });
-            b.SetValue(Border.CornerRadiusProperty, new CornerRadius(3));
-            var cp = new System.Windows.FrameworkElementFactory(typeof(ContentPresenter));
-            cp.SetValue(ContentPresenter.HorizontalAlignmentProperty, HorizontalAlignment.Center);
-            cp.SetValue(ContentPresenter.VerticalAlignmentProperty,   VerticalAlignment.Center);
-            b.AppendChild(cp); t.VisualTree = b; return t;
-        }
-
-        public override void Dispose()
-        {
-            // Kill the intraday loop process if still running
-            try
-            {
-                if (_loopProcess != null && !_loopProcess.HasExited)
-                {
-                    try { _loopProcess.Kill(entireProcessTree: true); } catch { }
-                    _loopProcess.WaitForExit(1000);
-                }
-            }
-            catch { }
-            _loopProcess = null;
-            _loopRunning = false;
-
-            try { Application.Current?.Dispatcher?.Invoke(() => ClosePanel()); } catch { }
-            base.Dispose();
-        }
-
-        // ── Intraday loop refresh: background process toggle ─────────────────
-        private void ToggleLoop()
-        {
-            if (_loopRunning) StopLoop();
-            else              StartLoop();
-        }
-
-        private void StartLoop()
-        {
-            if (_loopRunning) return;
-            if (!File.Exists(IntradayRefreshScriptPath))
-            {
-                if (_statusText != null)
-                    _statusText.Text = "❌ Intraday script not found: " + IntradayRefreshScriptPath;
-                return;
-            }
-            try
-            {
-                var psi = new ProcessStartInfo
-                {
-                    FileName               = OfkUtils.ResolveExe(PythonExePath),
-                    Arguments              = "\"" + IntradayRefreshScriptPath + "\" NQ --loop",
-                    UseShellExecute        = false,
-                    CreateNoWindow         = true,
-                    WindowStyle            = ProcessWindowStyle.Hidden,
-                    WorkingDirectory       = System.IO.Path.GetDirectoryName(IntradayRefreshScriptPath)
-                                             ?? @"C:\OFK_Atas_GEX\OFK_GEX_Pipeline",
-                    RedirectStandardOutput = true,
-                    RedirectStandardError  = true,
-                };
-                // Force UTF-8 on Python stdout/stderr: otherwise box-drawing
-                // chars (─, ═, →) raise UnicodeEncodeError on cp1252
-                // (default encoding when stdout is piped on Windows).
-                psi.Environment["PYTHONIOENCODING"] = "utf-8";
-                psi.Environment["PYTHONUTF8"]       = "1";
-                _loopProcess = Process.Start(psi);
-                if (_loopProcess == null)
-                {
-                    if (_statusText != null) _statusText.Text = "❌ Loop startup failed";
-                    return;
-                }
-                // CRITICAL: consume streams async to avoid blocking
-                // the Python process when it prints (pipe buffer ~4KB fills
-                // otherwise, the process freezes on cycle 2-3).
-                _loopProcess.OutputDataReceived += (s, e) => { /* discard */ };
-                _loopProcess.ErrorDataReceived  += (s, e) => { /* discard */ };
-                try { _loopProcess.BeginOutputReadLine(); } catch { }
-                try { _loopProcess.BeginErrorReadLine();  } catch { }
-                _loopRunning = true;
-                _loopProcess.EnableRaisingEvents = true;
-                _loopProcess.Exited += (s, e) =>
-                {
-                    _loopRunning = false;
-                    _loopProcess = null;
-                    Application.Current?.Dispatcher?.BeginInvoke(new Action(() =>
-                    {
-                        UpdateLoopButton();
-                        if (_statusText != null) _statusText.Text = "⏹ Intraday loop has stopped";
-                    }));
-                };
-                UpdateLoopButton();
-                if (_statusText != null)
-                    _statusText.Text = $"🔄 Intraday loop ON  (PID {_loopProcess.Id})";
-            }
-            catch (Exception ex)
-            {
-                if (_statusText != null)
-                    _statusText.Text = "❌ " + ex.Message.Substring(0, Math.Min(60, ex.Message.Length));
-            }
-        }
-
-        private void StopLoop()
-        {
-            try
-            {
-                if (_loopProcess != null && !_loopProcess.HasExited)
-                {
-                    try { _loopProcess.Kill(entireProcessTree: true); } catch { }
-                    _loopProcess.WaitForExit(2000);
-                }
-            }
-            catch { }
-            _loopProcess = null;
-            _loopRunning = false;
-            UpdateLoopButton();
-            if (_statusText != null) _statusText.Text = "⏹ Intraday loop OFF";
-        }
-
-        private void UpdateLoopButton()
-        {
-            if (_btnLoop == null) return;
-            Application.Current?.Dispatcher?.BeginInvoke(new Action(() =>
-            {
-                if (_btnLoop == null) return;
-                if (_loopRunning)
-                {
-                    _btnLoop.Content     = "⏹  Intraday loop: ON";
-                    _btnLoop.Background  = new SolidColorBrush(System.Windows.Media.Color.FromRgb(20, 70, 35));
-                    _btnLoop.Foreground  = new SolidColorBrush(System.Windows.Media.Color.FromRgb(63, 185, 80));
-                    _btnLoop.BorderBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(63, 185, 80));
-                }
-                else
-                {
-                    _btnLoop.Content     = "▶  Intraday loop: OFF";
-                    _btnLoop.Background  = new SolidColorBrush(System.Windows.Media.Color.FromRgb(35, 35, 45));
-                    _btnLoop.Foreground  = new SolidColorBrush(System.Windows.Media.Color.FromRgb(150, 150, 160));
-                    _btnLoop.BorderBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(80, 80, 90));
-                }
-            }));
-        }
-
-        // ── Replay: opening the WPF window ───────────────────────────────────
-        private void OpenReplayWindow()
-        {
-            if (_replayWindow != null) { try { _replayWindow.Activate(); } catch { } return; }
-            var snaps = GexLoader.ListSnapshots(IntradayHistoryDir, "NQ", DateTime.Today);
-            if (snaps.Count == 0)
-            {
-                try {
-                    MessageBox.Show(
-                        "No intraday snapshots found for today.\n\n" +
-                        "Check that run_intraday_refresh.py is running and the folder is correct:\n" +
-                        IntradayHistoryDir,
-                        "Intraday replay", MessageBoxButton.OK, MessageBoxImage.Information);
-                } catch { }
-                return;
-            }
-            _replayWindow = new ReplayWindow(snaps, "NQ",
-                onSnapshotSelected: (path, ts) => LoadReplaySnapshot(path, ts),
-                onExitReplay:       () => ExitReplayMode());
-            _replayWindow.Closed += (s, e) => {
-                _replayWindow = null;
-                if (_replayMode) ExitReplayMode();
-            };
-            _replayWindow.Show();
-        }
-
         // ── LoadLevels (delegates to shared loader) ──────────────────────────
         private void LoadLevels()
         {
             if (_replayMode) return; // freeze during replay
             var (gex, meta, ok) = GexLoader.Load(JsonPath, "nq");
-            if (!ok) { _levelsLoaded = false; return; }
+            // Failed read (e.g. caught mid-write by the pipeline): keep the last
+            // good levels; _jsonSeen is unchanged, so the next check retries.
+            if (!ok) return;
             _levels       = gex;
             _meta         = meta;
-            _loadedDate   = DateTime.Today.ToString("yyyy-MM-dd");
+            _loadedDate   = OfkEnv.NowEt.ToString("yyyy-MM-dd");
             _lastLoadTime = DateTime.Now;
+            _jsonSeen     = OfkUtils.LastWriteUtc(JsonPath);
             _levelsLoaded = true;
             LoadAlertStats();
+            UpdatePanelText();
         }
 
         // ── Intraday replay: loading a historical snapshot ───────────────────
@@ -1732,16 +1654,17 @@ namespace OFK_GEX
             _levels          = gex;
             _meta            = meta;
             _levelsLoaded    = true;
-            try { Application.Current?.Dispatcher?.BeginInvoke(new Action(() => UpdatePanelText())); } catch { }
+            UpdatePanelText();
             try { RedrawChart(); } catch { }
         }
 
         public void ExitReplayMode()
         {
             _replayMode      = false;
+            _replayIdx       = -1;
             _replayTimestamp = DateTime.MinValue;
             LoadLevels();
-            try { Application.Current?.Dispatcher?.BeginInvoke(new Action(() => UpdatePanelText())); } catch { }
+            UpdatePanelText();
             try { RedrawChart(); } catch { }
         }
 
