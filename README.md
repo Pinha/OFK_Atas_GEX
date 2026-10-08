@@ -14,7 +14,7 @@ ATAS indicators and Python pipeline for trading the E-mini Nasdaq-100 (NQ) and E
 ## What it does
 
 - **Python pipeline** scrapes CME and CBOE option chains, computes Greeks Exposure levels (GEX, VEX, DEX, CEX), enriches with VIX and macro context, and writes a JSON file every 5 minutes during RTH.
-- **ATAS indicators (C#)** read the JSON and draw the levels live on NQ/ES charts, with an on-chart context score, a floating panel, an intraday replay, and 12 alert types.
+- **ATAS indicators (C#)** read the JSON and draw the levels live on NQ/ES charts, with an on-chart context score, an on-chart panel with buttons, an intraday replay, and 12 alert types.
 - **AI briefing** uses Claude to generate a daily JSON briefing with regime analysis, RTH plan (buy/sell zones, invalidations), and risk alerts. Rendered as a dark-theme A4 PDF.
 
 ## Quick install
@@ -69,39 +69,55 @@ The precompiled DLL targets ATAS X (.NET 10 / Windows). No build tools required.
 
 ## Daily usage
 
-The package ships **two indicators that work together**: `OFK GEX Levels` (the levels and the floating panel) and `OFK Context Score` (a directional bias gauge). Both read the same `full_levels_*.json` produced by the Python pipeline.
-
-### 1. GEX Levels — the floating panel and the buttons
-
-Once `OFK NQ GEX Levels` (or its ES counterpart) is added to your chart, a floating panel summarizes everything you need for the session — and four buttons let you run the entire workflow without touching a terminal.
+The package ships **two indicators that work together**: `OFK GEX Levels` (the levels and the on-chart panel) and `OFK Context Score` (a directional bias gauge, in a sub-pane). Both read the same `full_levels_*.json` produced by the Python pipeline.
 
 <p align="center">
-  <img src="docs/images/floating_panel.png" alt="OFK GEX Levels floating panel" width="380">
+  <img src="docs/images/atasx_nq_chart_panel.png" alt="OFK NQ GEX Levels panel and Context Score on an ATAS X NQ chart" width="100%">
+  <br><sub>NQ 5m on ATAS X — panel (top-left), GEX levels on the chart, Context Score sub-pane (bottom)</sub>
+</p>
+
+### 1. GEX Levels — the panel and the buttons
+
+Once `OFK NQ GEX Levels` (or its ES counterpart) is added to your chart, a panel drawn on the chart summarizes everything you need for the session — and its buttons run the entire workflow without touching a terminal. Click the panel title to collapse/expand it; if the text does not fit the price pane it ends with `… +N lines`. Position, font size and opacity are in the indicator settings (group `09`). While the panel is shown, ATAS' own indicator list and status line move to its right.
+
+<p align="center">
+  <img src="docs/images/atasx_es_chart_panel.png" alt="OFK ES GEX Levels panel on an ATAS X ES chart" width="100%">
+  <br><sub>Same on ES 5m</sub>
 </p>
 
 #### Reading the panel
 
-The top of the panel is a structured snapshot of the current session:
+Below the buttons and the status line, the panel shows a structured snapshot of the current session:
 
 - **Header banner** — `OPTIONS GREEKS NQ` confirms the symbol and shows the trade date of the underlying option chain.
 - **Position sizing** — Suggests a risk allocation level (`100% • • • • •` for normal, scaled down to `20%` in stressed regimes) based on VIX, blackout, and data freshness.
-- **Alert stats** — Counts of triggered alerts today and over the last 7 days.
+- **Alert stats** — Counts of triggered alerts today (current New York session) and over the last 7 days.
 - **GEX / VEX / CEX / DEX block** — Aggregate dealer positioning. The label (`POSITIVE • pinning`, `NEGATIVE • amplifying`, etc.) is the regime headline.
-- **Key structural levels** — Gamma Flip, Vol Trigger, Risk Pivot, Vanna Flip, Charm Magnet, Max Pain, Expected Move range, and PCR.
-- **Intraday section (0-7 DTE)** — IVx/IVR/Skew/Term, Call Wall, Put Wall, cTrans/pTrans, D+/D- DEX, top OI strikes — the levels that matter most for scalping.
+- **Key structural levels** — Gamma Flip, Vol Trigger, Risk Pivot, Vanna Flip, Charm Magnet, Max Pain, Expected Move range, and PCR. A flip of `0` means no zero crossing within ±15% of spot (undefined).
+- **Intraday section (0-7 DTE)** — IVx/IVR/Skew/Term, Call Wall (at/above spot), Put Wall (at/below spot), cTrans/pTrans, D+/D- DEX, top OI strikes — the levels that matter most for scalping.
 - **0DTE section** — End-of-session magnets (Max Pain, Pin Strike, Charm) plus total 0DTE OI.
 - **Structural section** — CME 49d levels for the broader context.
 
-#### The four buttons (no command line needed)
-
-The bottom of the panel has four actions that run the Python pipeline directly from ATAS:
+#### The buttons (no command line needed)
 
 | Button | What it does |
 |---|---|
-| **GEX LEVELS NQ** | Runs the full morning pipeline (CME scrape + CBOE fetch + VIX/macro merge) and refreshes the JSON file the indicator reads. Use it once at the open, or any time you want to force-refresh. |
-| **Briefing** | Opens the latest daily briefing PDF (regime analysis, RTH plan with buy/sell zones, risk alerts, one-line summary) generated by the AI agent. |
-| **Intraday replay** | Opens a separate window where you can scrub through the day's intraday snapshots (one every 5 minutes) and see how the levels evolved through the session — useful for post-trade review and learning how the levels react to price action in real time. |
-| **Intraday loop: OFF** | Toggles a 5-minute auto-refresh loop. When ON, the levels update continuously throughout the RTH session without further interaction. |
+| **► GEX LEVELS NQ** | Runs the full morning pipeline (CME scrape + CBOE fetch + VIX/macro merge + AI briefing + PDF) in the background — no console window, no focus stealing; output in `data/logs/run_morning_NQ_last.log`. Use it once at the open, or any time you want to force-refresh. |
+| **Briefing PDF** | Opens the latest daily briefing PDF (regime analysis, RTH plan with buy/sell zones, risk alerts, one-line summary) generated by the AI agent. |
+| **◄ Replay / Replay ►** | Steps through today's intraday snapshots (one every 5 minutes while the loop runs) — the chart shows the levels as they were; past the last snapshot returns to live. |
+| **● Live** | Shown when not in replay. |
+| **► Loop: OFF / ■ Loop: ON** | Toggles the 5-minute intraday refresh (CBOE 0-7 DTE data). The chart picks up each new JSON within 5 seconds. Structural CME levels change only with **GEX LEVELS**. |
+
+<details>
+<summary><b>Indicator settings (screenshots)</b></summary>
+
+<p align="center">
+  <img src="docs/images/atasx_nq_gex_levels_settings.png" alt="OFK NQ GEX Levels settings" width="100%">
+  <img src="docs/images/atasx_nq_context_score_settings.png" alt="OFK NQ Context Score settings" width="100%">
+  <img src="docs/images/atasx_es_gex_levels_settings.png" alt="OFK ES GEX Levels settings" width="100%">
+  <img src="docs/images/atasx_es_context_score_settings.png" alt="OFK ES Context Score settings" width="100%">
+</p>
+</details>
 
 ### 2. Context Score — the directional bias gauge
 
