@@ -2,22 +2,25 @@
 
 ATAS indicators that read the GEX/options levels produced by the Python pipeline `OFK_GEX_Pipeline/`.
 
+This branch targets **ATAS X**, whose loader rejects WPF indicators: the panel is drawn on the
+chart (`OnRender`) and its buttons are clicked on the chart (`ProcessMouseClick`).
+
 ---
 
 ## Installation
 
-**Required path**: extract the repository into `C:\OFK_Atas_GEX\` (root of the C: drive).
+The repository can live in **any folder**. The indicators' default paths come from the
+environment variable `OFK_GEX_HOME` (the repository folder); without it they default to
+`C:\OFK_Atas_GEX\` (`~/OFK_Atas_GEX` outside Windows). Every path stays editable in each
+indicator's settings.
 
-Reason: the ATAS indicator default settings (JSON path, Python script paths, PDF folder) are pre-configured to point to `C:\OFK_Atas_GEX\OFK_GEX_Pipeline\...`. Installing elsewhere requires manual editing of these parameters in the ATAS UI for each indicator.
-
-### Steps
-
-1. Download the latest release ZIP from GitHub
-2. Extract to `C:\OFK_Atas_GEX\` (so that `C:\OFK_Atas_GEX\OFK_ATAS\` and `C:\OFK_Atas_GEX\OFK_GEX_Pipeline\` exist)
-3. Build the indicators: `cd C:\OFK_Atas_GEX\OFK_ATAS && dotnet build OFK_Atas_GEX.csproj -c Release`
-4. Copy the DLL: `Copy-Item "bin\Release\net10.0-windows\OFK_Atas_GEX.dll" "$env:APPDATA\ATAS\Indicators\" -Force`
-5. Install Python dependencies: `cd C:\OFK_Atas_GEX\OFK_GEX_Pipeline && pip install -r requirements.txt && playwright install chromium`
-6. Restart ATAS — indicators will appear under "OFK Suite"
+1. Clone or extract the repository, e.g. to `D:\Trading\OFK_Atas_GEX\`
+2. If that is not `C:\OFK_Atas_GEX\`, set the variable once (then restart ATAS):
+   `[Environment]::SetEnvironmentVariable('OFK_GEX_HOME', 'D:\Trading\OFK_Atas_GEX', 'User')`
+3. Copy `dist\OFK_Atas_GEX.dll` (ATAS X build) to `%APPDATA%\ATAS X\Indicators\` — ATAS X
+   hot-reloads it, or build it yourself (see below)
+4. Install Python dependencies: `cd OFK_GEX_Pipeline && pip install -r requirements.txt && playwright install chromium`
+5. Indicators appear under **OFK Suite**
 
 ---
 
@@ -25,67 +28,41 @@ Reason: the ATAS indicator default settings (JSON path, Python script paths, PDF
 
 | File | Display name | Description |
 |---|---|---|
-| `OFK_NQ_GEX_Levels.cs` | OFK NQ GEX Levels | NQ GEX/options levels (walls, gamma flip, DEX, 0DTE, IV, VIX) with WPF panel |
+| `OFK_NQ_GEX_Levels.cs` | OFK NQ GEX Levels | NQ GEX/options levels (walls, gamma flip, DEX, 0DTE, IV, VIX), on-chart panel with buttons and intraday replay |
 | `OFK_ES_GEX_Levels.cs` | OFK ES GEX Levels | Same for ES E-mini S&P500 |
 | `OFK_NQ_ContextScore.cs` | OFK NQ Context Score | Directional score -100/+100 based on GEX + VIX + macro |
 | `OFK_ES_ContextScore.cs` | OFK ES Context Score | Same for ES |
-| `OFK_GexShared.cs` | (lib) | Shared JSON loader: `GexSnapshot`, `MetaSnapshot`, `GexLoader` |
-| `OFK_ReplayWindow.cs` | (UI) | WPF intraday replay window (slider over snapshots) |
+| `OFK_GexShared.cs` | (lib) | JSON loader (`GexLoader`), environment/clock (`OfkEnv`), utilities |
 
-**Namespace**: `OFK_GEX`
-**Assembly**: `OFK_Atas_GEX.dll`
-**ATAS category**: `OFK Suite`
+**Namespace**: `OFK_GEX` · **Assembly**: `OFK_Atas_GEX.dll` · **ATAS category**: `OFK Suite`
+
+Session rules (last RTH hour, 0DTE pin window, replay day, "today" alert stats) follow the
+exchange clock — America/New_York, DST-aware — whatever the machine's timezone.
 
 ---
 
 ## Build
 
-### Prerequisites
-- Visual Studio 2022 or VS Code with the .NET 10 SDK
-- ATAS installed (default path: `C:\Program Files (x86)\ATAS Platform`)
+Prerequisites: .NET 10 SDK and ATAS X installed.
 
-### Steps
-
-**1 — Check the ATAS path in the csproj**
-
-Open `OFK_ATAS/OFK_Atas_GEX.csproj`:
-```xml
-<ATASPath>C:\Program Files (x86)\ATAS Platform</ATASPath>
-```
-
-**2 — Build**
 ```bash
 cd OFK_ATAS
-dotnet build OFK_Atas_GEX.csproj -c Release
-```
-Produces `OFK_Atas_GEX.dll` in `bin\Release\net10.0-windows\`.
-
-**3 — Install into ATAS**
-
-Copy `OFK_Atas_GEX.dll` to:
-```
-%AppData%\ATAS\Indicators\
+dotnet build -c Release
+# ATAS installed elsewhere?  dotnet build -c Release -p:ATASPath="D:\Apps\ATAS X"
 ```
 
-**4 — Restart ATAS**
-
-The 4 indicators appear under **OFK Suite**:
-- `OFK NQ GEX Levels`
-- `OFK ES GEX Levels`
-- `OFK NQ Context Score`
-- `OFK ES Context Score`
+Produces `bin\Release\net10.0-windows\OFK_Atas_GEX.dll`; copy it to `%APPDATA%\ATAS X\Indicators\`.
+If ATAS does not list the indicators, check `%APPDATA%\ATAS X\Logs\app_*.log` for
+`AssemblyPatcher` / `Skipped loading` lines.
 
 ---
 
 ## Python pipeline
 
-The pipeline that produces the JSON files consumed by the indicators lives in `OFK_GEX_Pipeline/`. See `OFK_GEX_Pipeline/CLAUDE.md` for its architecture and `docs/integration_handoff/` for the output contract.
-
-The indicators read by default from:
-- `C:\OFK_Atas_GEX\OFK_GEX_Pipeline\data\full_levels_NQ.json`
-- `C:\OFK_Atas_GEX\OFK_GEX_Pipeline\data\full_levels_ES.json`
-
-The path is adjustable in each indicator's settings (group `01.Source`, parameter `JSON Path`).
+The pipeline that produces the JSON files lives in `OFK_GEX_Pipeline/`. See
+`OFK_GEX_Pipeline/CLAUDE.md` for its architecture and `docs/integration_handoff/` for the
+output contract. The indicators read `<OFK_GEX_HOME>\OFK_GEX_Pipeline\data\full_levels_{NQ,ES}.json`
+by default (group `01.Source`, parameter `JSON Path`).
 
 ---
 
@@ -93,5 +70,4 @@ The path is adjustable in each indicator's settings (group `01.Source`, paramete
 
 - `OFK_GEX_Pipeline/GUIDE_GEX_LEVELS.md` — plain-English guide to reading the levels
 - `OFK_GEX_Pipeline/CLAUDE.md` — Python pipeline architecture
-- `docs/integration_handoff/` — integration contract for external consumers (7 documents)
-- `CLAUDE.md` (root) — ATAS development context
+- `docs/integration_handoff/` — integration contract for external consumers

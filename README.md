@@ -2,6 +2,15 @@
 
 ATAS indicators and Python pipeline for trading the E-mini Nasdaq-100 (NQ) and E-mini S&P 500 (ES) futures using options-derived levels (GEX, DEX, walls, gamma flip, pin strikes) and AI-generated daily briefings.
 
+> **About this fork** — branch `atas-x` of [Kza56/OFK_Atas_GEX](https://github.com/Kza56/OFK_Atas_GEX):
+> - runs on **ATAS X** (no WPF: on-chart panel, clickable buttons, replay buttons);
+> - **portable**: any install folder (`OFK_GEX_HOME`), any machine timezone (exchange clock);
+> - Gamma/Vanna Flip computed from the exposure profile (never the spot as fallback) and
+>   side-aware intraday walls (Call Wall above / Put Wall below spot);
+> - pipeline runs without a console window; CME browser kept off-screen without stealing focus.
+>
+> Same license as upstream (PolyForm Noncommercial 1.0.0).
+
 ## What it does
 
 - **Python pipeline** scrapes CME and CBOE option chains, computes Greeks Exposure levels (GEX, VEX, DEX, CEX), enriches with VIX and macro context, and writes a JSON file every 5 minutes during RTH.
@@ -25,21 +34,21 @@ and the Claude CLI is found on `PATH` (`CLAUDE_CMD` only overrides it).
 intraday replay follow the exchange clock (America/New_York, DST-aware), not the
 machine's local time. Snapshot files are named in UTC.
 
-**ATAS X**: it rejects WPF indicators, so `dist/OFK_Atas_GEX.dll` (WPF panel) loads only in
-ATAS Classic. For ATAS X build from source (`dotnet build -c Release` in `OFK_ATAS`, .NET 10
-SDK) and copy the DLL to `%APPDATA%\ATAS X\Indicators\` — it hot-reloads.
+**ATAS X**: `dist/OFK_Atas_GEX.dll` is built for ATAS X from this branch (ATAS X rejects WPF
+indicators, so upstream's DLL does not load there). Copy it to `%APPDATA%\ATAS X\Indicators\` —
+ATAS X hot-reloads it. To rebuild: `dotnet build -c Release` in `OFK_ATAS` (.NET 10 SDK).
 
 ### Steps
 
-1. Download the source ZIP from the [latest release](https://github.com/Kza56/OFK_Atas_GEX/releases/latest)
-2. Extract it — you'll get a folder named `OFK_Atas_GEX-main`
-3. Rename it to `OFK_Atas_GEX` and move it anywhere (e.g. `C:\OFK_Atas_GEX\`); if not `C:\OFK_Atas_GEX\`, set `OFK_GEX_HOME` (see above)
+1. Get this branch: `git clone -b atas-x https://github.com/Pinha/OFK_Atas_GEX` (or download the `atas-x` ZIP)
+2. Put the `OFK_Atas_GEX` folder anywhere (e.g. `C:\OFK_Atas_GEX\`)
+3. If it is not `C:\OFK_Atas_GEX\`, set `OFK_GEX_HOME` (see above)
 4. **Install Python 3.10 or higher** (tested on 3.14) if you don't have it already: download from [python.org](https://www.python.org/downloads/windows/) and **make sure to check "Add Python to PATH"** during installation. Verify it works by opening PowerShell and running `python --version` — you should see `Python 3.10` or higher (try `python3 --version` if `python` is not recognized).
 5. Open PowerShell and run:
 
 ```powershell
-# Copy the precompiled DLL to ATAS Classic (ATAS X: build from source, see above)
-Copy-Item ".\dist\OFK_Atas_GEX.dll" "$env:APPDATA\ATAS\Indicators\" -Force
+# Copy the precompiled DLL to ATAS X (from the repository folder)
+Copy-Item ".\dist\OFK_Atas_GEX.dll" "$env:APPDATA\ATAS X\Indicators\" -Force
 
 # Install Python dependencies (from the repository folder)
 cd .\OFK_GEX_Pipeline
@@ -47,13 +56,14 @@ pip install -r requirements.txt
 playwright install chromium
 ```
 
-6. Restart ATAS — indicators appear in the "Custom" category:
+6. Indicators appear in the "OFK Suite" category:
    - OFK NQ GEX Levels
    - OFK NQ Context Score
    - OFK ES GEX Levels
    - OFK ES Context Score
 
-The precompiled DLL targets .NET 10 / Windows. No build tools required.
+The precompiled DLL targets ATAS X (.NET 10 / Windows). No build tools required.
+`OFK_Loader.cmd` runs the tests and both morning pipelines from any folder (desktop shortcut friendly).
 
 > **Building from source** (only if you modify the C# code): see [OFK_ATAS/README.md](OFK_ATAS/README.md).
 

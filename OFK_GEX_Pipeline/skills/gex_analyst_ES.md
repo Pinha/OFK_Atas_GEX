@@ -15,6 +15,9 @@ according to the schema below. Reply with VALID JSON ONLY, nothing else.
 
 ### GEX levels (structural — remain valid intraday)
 - gamma_flip, vol_trigger, risk_pivot, vanna_flip, charm_magnet
+- gamma_flip / vanna_flip = 0 means NO zero crossing within ±15% of spot
+  (level undefined): never use 0 as a price or a zone; state that the flip is
+  undefined and rely on gex_regime.
 - call_wall, put_wall: structural CME multi-day walls (often far from spot)
 - total_gex, total_vex, gex_regime
 

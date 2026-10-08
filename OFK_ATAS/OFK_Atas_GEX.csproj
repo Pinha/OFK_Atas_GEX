@@ -19,11 +19,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- ATAS X rejects WPF: the replay window is replaced by panel buttons -->
-    <Compile Remove="OFK_ReplayWindow.cs" />
-  </ItemGroup>
-
-  <ItemGroup>
     <Reference Include="ATAS.Indicators">
       <HintPath>$(ATASPath)\ATAS.Indicators.dll</HintPath>
       <Private>false</Private>
